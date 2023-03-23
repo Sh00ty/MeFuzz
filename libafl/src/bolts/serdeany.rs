@@ -75,7 +75,7 @@ macro_rules! create_serde_registry_for_trait {
                 hash_map::{Keys, Values, ValuesMut},
                 HashMap,
             };
-            use postcard;
+            use rmp_serde;
             use serde::{Deserialize, Serialize};
             use $crate::{
                 bolts::{
@@ -178,11 +178,11 @@ macro_rules! create_serde_registry_for_trait {
             }
 
             // Cloning by serializing and deserializing. It ain't fast, but it's honest work.
-            // We unwrap postcard, it should not have a reason to fail.
+            // We unwrap MessageProtocol, it should not have a reason to fail.
             impl Clone for SerdeAnyMap {
                 fn clone(&self) -> Self {
-                    let serialized = postcard::to_allocvec(&self).unwrap();
-                    postcard::from_bytes(&serialized).unwrap()
+                    let serialized = rmp_serde::to_vec_named(&self).unwrap();
+                    rmp_serde::from_slice(&serialized).unwrap()
                 }
             }
 
@@ -305,11 +305,11 @@ macro_rules! create_serde_registry_for_trait {
             }
 
             // Cloning by serializing and deserializing. It ain't fast, but it's honest work.
-            // We unwrap postcard, it should not have a reason to fail.
+            // We unwrap MessageProtocol, it should not have a reason to fail.
             impl Clone for NamedSerdeAnyMap {
                 fn clone(&self) -> Self {
-                    let serialized = postcard::to_allocvec(&self).unwrap();
-                    postcard::from_bytes(&serialized).unwrap()
+                    let serialized = rmp_serde::to_vec(&self).unwrap();
+                    rmp_serde::from_slice(&serialized).unwrap()
                 }
             }
 

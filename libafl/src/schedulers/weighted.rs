@@ -16,7 +16,7 @@ use crate::{
     schedulers::{
         powersched::{PowerSchedule, SchedulerMetadata},
         testcase_score::{CorpusWeightTestcaseScore, TestcaseScore},
-        Scheduler,
+        Scheduler, SchedulerID,
     },
     state::{HasCorpus, HasMetadata, HasRand, UsesState},
     Error,
@@ -235,6 +235,10 @@ where
     O: MapObserver,
     S: HasCorpus + HasMetadata + HasRand,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("Weighted")), false, false);
+    }
     /// Add an entry to the corpus and return its index
     fn on_add(&mut self, state: &mut S, idx: CorpusId) -> Result<(), Error> {
         let current_idx = *state.corpus().current();

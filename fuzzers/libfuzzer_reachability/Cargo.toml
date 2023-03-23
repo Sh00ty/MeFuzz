@@ -20,9 +20,9 @@ which = { version = "4.0.2" }
 
 [dependencies]
 libafl = { path = "../../libafl/" }
-libafl_targets = { path = "../../libafl_targets/", features = ["sancov_pcguard_hitcounts", "libfuzzer"] }
+libafl_targets = { path = "../libafl_targets/", features = ["sancov_pcguard_hitcounts", "libfuzzer"] }
 # TODO Include it only when building cc
-libafl_cc = { path = "../../libafl_cc/" }
+libafl_cc = { path = "../libafl_cc/" }
 mimalloc = { version = "*", default-features = false }
 
 [lib]

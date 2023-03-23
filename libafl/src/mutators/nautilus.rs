@@ -1,6 +1,7 @@
 //! Mutators for the `Nautilus` grammmar fuzzer
 
 use core::fmt::Debug;
+use std::prelude::v1::String;
 
 use grammartec::{
     context::Context,
@@ -13,7 +14,7 @@ use crate::{
     feedbacks::NautilusChunksMetadata,
     generators::nautilus::NautilusContext,
     inputs::nautilus::NautilusInput,
-    mutators::{MutationResult, Mutator},
+    mutators::{MutationResult, Mutator, MutatorID},
     state::{HasCorpus, HasMetadata},
     Error,
 };
@@ -31,6 +32,11 @@ impl Debug for NautilusRandomMutator<'_> {
 }
 
 impl<S> Mutator<NautilusInput, S> for NautilusRandomMutator<'_> {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("NautilusRandomMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         _state: &mut S,
@@ -92,6 +98,11 @@ impl Debug for NautilusRecursionMutator<'_> {
 }
 
 impl<S> Mutator<NautilusInput, S> for NautilusRecursionMutator<'_> {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("NautilusRecursionMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         _state: &mut S,
@@ -158,6 +169,11 @@ impl<S> Mutator<NautilusInput, S> for NautilusSpliceMutator<'_>
 where
     S: HasCorpus<Input = NautilusInput> + HasMetadata,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("NautilusSpliceMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,

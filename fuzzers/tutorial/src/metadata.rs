@@ -62,17 +62,17 @@ where
         Ok(false)
     }
 
-    #[inline]
-    fn append_metadata(
-        &mut self,
-        _state: &mut S,
-        testcase: &mut Testcase<PacketData>,
-    ) -> Result<(), Error> {
-        testcase
-            .metadata_mut()
-            .insert(PacketLenMetadata { length: self.len });
-        Ok(())
-    }
+    // #[inline]
+    // fn append_metadata(
+    //     &mut self,
+    //     _state: &mut S,
+    //     testcase: &mut Testcase<PacketData>,
+    // ) -> Result<(), Error> {
+    //     testcase
+    //         .metadata_mut()
+    //         .insert(PacketLenMetadata { length: self.len });
+    //     Ok(())
+    // }
 }
 
 impl Named for PacketLenFeedback {

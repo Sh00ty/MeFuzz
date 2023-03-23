@@ -24,7 +24,7 @@ use libafl_nyx::{executor::NyxExecutor, helper::NyxHelper};
 
 fn main() {
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
-    let broker_port = 7777;
+    let broker_port = 1337;
 
     let monitor = MultiMonitor::new(|s| println!("{s}"));
 

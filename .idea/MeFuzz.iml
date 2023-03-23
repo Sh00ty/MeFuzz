@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="Go" enabled="true" />
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/libafl/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/libafl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/build_and_test_fuzzers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/deexit/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/gramatron/construct_automata/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/libafl_benches/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_cc/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_concolic/symcc_libafl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_concolic/symcc_runtime/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_concolic/test/dump_constraints/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_concolic/test/runtime_test/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_derive/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_frida/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_nyx/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_qemu/libafl_qemu_build/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_qemu/libafl_qemu_sys/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_qemu/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_sugar/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_targets/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fuzzers/libafl_tinyinst/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/libafl/target" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

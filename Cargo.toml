@@ -1,18 +1,18 @@
 [workspace]
 members = [
     "libafl",
-    "libafl_derive",
-    "libafl_cc",
-    "libafl_targets",
-    "libafl_frida",
-    "libafl_qemu",
-    "libafl_tinyinst",
-    "libafl_sugar",
-    "libafl_nyx",
-    "libafl_concolic/symcc_runtime",
-    "libafl_concolic/symcc_libafl",
-    "libafl_concolic/test/dump_constraints",
-    "libafl_concolic/test/runtime_test",
+    "fuzzers/libafl_derive",
+    "fuzzers/libafl_cc",
+    "fuzzers/libafl_targets",
+    "fuzzers/libafl_frida",
+    "fuzzers/libafl_qemu",
+    "fuzzers/libafl_tinyinst",
+    "fuzzers/libafl_sugar",
+    "fuzzers/libafl_nyx",
+    "fuzzers/libafl_concolic/symcc_runtime",
+    "fuzzers/libafl_concolic/symcc_libafl",
+    "fuzzers/libafl_concolic/test/dump_constraints",
+    "fuzzers/libafl_concolic/test/runtime_test",
     "utils/deexit",
     "utils/gramatron/construct_automata",
     "utils/libafl_benches",
@@ -20,16 +20,16 @@ members = [
 ]
 default-members = [
     "libafl",
-    "libafl_derive",
-    "libafl_cc",
-    "libafl_targets",
+    "fuzzers/libafl_derive",
+    "fuzzers/libafl_cc",
+    "fuzzers/libafl_targets",
 ]
 exclude = [
     "fuzzers",
     "bindings",
     "scripts",
-    "libafl_qemu/libafl_qemu_build",
-    "libafl_qemu/libafl_qemu_sys"
+    "fuzzers/libafl_qemu/libafl_qemu_build",
+    "fuzzers/libafl_qemu/libafl_qemu_sys"
 ]
 
 [workspace.package]

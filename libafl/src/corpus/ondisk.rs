@@ -21,8 +21,8 @@ use crate::{
 #[cfg(feature = "std")]
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub enum OnDiskMetadataFormat {
-    /// A binary-encoded postcard
-    Postcard,
+    /// A binary-encoded message_protocol
+    MessageProtocol,
     /// JSON
     Json,
     /// JSON formatted for readability

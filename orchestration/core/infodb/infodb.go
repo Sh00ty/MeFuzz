@@ -1,0 +1,137 @@
+package infodb
+
+import (
+	"github.com/pkg/errors"
+	"orchestration/entities"
+	"orchestration/infra/utils/logger"
+	"sync"
+)
+
+type fuzzInfoDB struct {
+	// сохраняем тест-кейсы для общей картины
+	seedPool *seedPool
+	// информация необходимая для проведения PCA
+	covData *CovData
+
+	mu *sync.RWMutex
+	// все зарегистрированные фаззеры
+	fuzzerMap map[entities.FuzzerID]entities.Fuzzer
+	// фаззеры плохо проявиших себя в предыдущих раундах
+	toChangeConf map[entities.FuzzerID]struct{}
+
+	generalCovMu *sync.Mutex
+	// общее покрытие собранное тест-кейсами пришедшими в мастер
+	generalCoverage [entities.CovSize]bool
+}
+
+// New - создает базу данных с динамической информацией для фаззеров
+func New(corpusDirName string) (*fuzzInfoDB, error) {
+	pool, err := NewSeedPool(corpusDirName, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &fuzzInfoDB{
+		mu:           &sync.RWMutex{},
+		generalCovMu: &sync.Mutex{},
+		seedPool:     pool,
+		fuzzerMap:    make(map[entities.FuzzerID]entities.Fuzzer, 0),
+		toChangeConf: make(map[entities.FuzzerID]struct{}),
+		covData:      NewCovData(),
+	}, nil
+}
+
+// ChangeConfig - сохраняет новый конфиг для фаззера
+func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) error {
+	db.mu.Lock()
+	fuzzer := db.fuzzerMap[fuzzerID]
+	fuzzer.Configuration = conf
+	db.fuzzerMap[fuzzerID] = fuzzer
+	db.covData.ChangeFuzzerConfig(fuzzerID, conf)
+	db.mu.Unlock()
+	return nil
+}
+
+// AddFuzzer - добавляет новый фаззер и начинает собирать по нему информацию
+func (db *fuzzInfoDB) AddFuzzer(f entities.Fuzzer) error {
+	db.mu.Lock()
+	if _, exists := db.fuzzerMap[f.ID]; exists {
+		return errors.Errorf("fuzzer with id=%v already exists", f.ID)
+	}
+	db.covData.AddFuzzer(f)
+	db.fuzzerMap[f.ID] = f
+	db.mu.Unlock()
+	return nil
+}
+
+// AddTestcases - сохраняет список тест-кейсов за раз
+func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities.Testcase, evalDataList []entities.EvaluatingData) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	for i := 0; i < len(idList); i++ {
+		fuzzer, exists := db.fuzzerMap[idList[i]]
+		if !exists {
+			logger.ErrorMessage("unknown fuzzer=%v of testcase, skip it", idList[i])
+			continue
+		}
+
+		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
+
+		if !evalDataList[i].HasCrash && evalDataList[i].NewCov == 0 {
+			logger.Info("useless testcase")
+			continue
+		}
+
+		if evalDataList[i].HasCrash {
+			fuzzer.BugsFound++
+		}
+
+		fuzzer.Testcases[tcList[i].InputHash] = struct{}{}
+		if err := db.seedPool.AddSeed(fuzzer.ID, tcList[i], evalDataList[i]); err != nil {
+			logger.Errorf(err, "failed to add testcase to pool: %v", tcList[i])
+		}
+	}
+}
+
+// DeleteFuzzer - удаляет фаззер
+func (db *fuzzInfoDB) DeleteFuzzer(id entities.FuzzerID) error {
+	db.mu.Lock()
+	if _, exists := db.fuzzerMap[id]; !exists {
+		return errors.Errorf("fuzzer with id=%v doesn't exist", id)
+	}
+	delete(db.fuzzerMap, id)
+	delete(db.toChangeConf, id)
+	db.mu.Unlock()
+	return nil
+}
+
+// NewGeneralCov - добавляет покрытие собранное оценщиком и возвращает true если это глобально новое покрытие
+func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
+	db.generalCovMu.Lock()
+	res := uint(0)
+	for i := 0; i < entities.CovSize; i++ {
+		if cov[i] != 0 {
+			if db.generalCoverage[i] {
+				continue
+			}
+			db.generalCoverage[i] = true
+			res++
+		}
+	}
+	db.generalCovMu.Unlock()
+	return res
+}
+
+// Lock - блокирует все БД кроме покрытия
+func (db *fuzzInfoDB) Lock() {
+	db.mu.Lock()
+}
+
+// Unlock - снимает Lock()
+func (db *fuzzInfoDB) Unlock() {
+	db.mu.Unlock()
+}
+
+// GetCovData - возращает данные необходимые для проведения PCA (НЕ ПОТОКОБЕЗОПАСНО)
+func (db *fuzzInfoDB) GetCovData() (map[entities.FuzzerID]entities.Fuzzer, *CovData) {
+	return db.fuzzerMap, db.covData
+}

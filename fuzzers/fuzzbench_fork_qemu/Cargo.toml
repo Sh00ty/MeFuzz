@@ -13,7 +13,7 @@ debug = true
 
 [dependencies]
 libafl = { path = "../../libafl/" }
-libafl_qemu = { path = "../../libafl_qemu/", features = ["x86_64", "usermode"] }
+libafl_qemu = { path = "../libafl_qemu/", features = ["x86_64", "usermode"] }
 
 clap = { version = "4.0", features = ["default"] }
 nix = "0.26"

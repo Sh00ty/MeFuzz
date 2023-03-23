@@ -238,7 +238,7 @@ where
             let mut tmpfile = File::create(&tmpfile_name)?;
 
             let serialized = match self.meta_format.as_ref().unwrap() {
-                OnDiskMetadataFormat::Postcard => postcard::to_allocvec(&ondisk_meta)?,
+                OnDiskMetadataFormat::MessageProtocol => rmp_serde::to_vec(&ondisk_meta)?,
                 OnDiskMetadataFormat::Json => serde_json::to_vec(&ondisk_meta)?,
                 OnDiskMetadataFormat::JsonPretty => serde_json::to_vec_pretty(&ondisk_meta)?,
                 #[cfg(feature = "gzip")]

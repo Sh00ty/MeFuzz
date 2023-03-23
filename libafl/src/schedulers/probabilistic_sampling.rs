@@ -11,7 +11,7 @@ use crate::{
     bolts::rands::Rand,
     corpus::{Corpus, CorpusId},
     inputs::UsesInput,
-    schedulers::{Scheduler, TestcaseScore},
+    schedulers::{Scheduler, SchedulerID, TestcaseScore},
     state::{HasCorpus, HasMetadata, HasRand, UsesState},
     Error,
 };
@@ -99,6 +99,14 @@ where
     F: TestcaseScore<S>,
     S: HasCorpus + HasMetadata + HasRand,
 {
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (
+            SchedulerID(String::from("ProbabilitySamplingScheduler")),
+            false,
+            false,
+        );
+    }
+
     fn on_add(&mut self, state: &mut Self::State, idx: CorpusId) -> Result<(), Error> {
         if state.metadata().get::<ProbabilityMetadata>().is_none() {
             state.add_metadata(ProbabilityMetadata::new());

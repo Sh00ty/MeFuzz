@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 use core::{any::type_name, cmp::Ordering, marker::PhantomData};
+use std::prelude::v1::String;
 
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use crate::{
     feedbacks::MapIndexesMetadata,
     inputs::UsesInput,
     observers::ObserversTuple,
-    schedulers::{LenTimeMulTestcaseScore, Scheduler, TestcaseScore},
+    schedulers::{LenTimeMulTestcaseScore, Scheduler, SchedulerID, TestcaseScore},
     state::{HasCorpus, HasMetadata, HasRand, UsesState},
     Error,
 };
@@ -82,6 +83,10 @@ where
     M: AsSlice<Entry = usize> + SerdeAny + HasRefCnt,
     CS::State: HasCorpus + HasMetadata + HasRand,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("Minimizer")), false, false);
+    }
     /// Add an entry to the corpus and return its index
     fn on_add(&mut self, state: &mut CS::State, idx: CorpusId) -> Result<(), Error> {
         self.base.on_add(state, idx)?;

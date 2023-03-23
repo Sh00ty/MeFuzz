@@ -51,13 +51,16 @@ use crate::{
     inputs::{Input, InputConverter, UsesInput},
     monitors::Monitor,
     state::{HasClientPerfMonitor, HasExecutions, HasMetadata, UsesState},
-    Error,
+    Error, FuzzerConfiguration,
 };
 
 /// Forward this to the client
 const _LLMP_TAG_EVENT_TO_CLIENT: Tag = Tag(0x2C11E471);
 /// Only handle this in the broker
 const _LLMP_TAG_EVENT_TO_BROKER: Tag = Tag(0x2B80438);
+/// WTF если что для мастера
+const LLMP_TAG_EVENT_TO_MASTER: Tag = Tag(0x2D52894);
+
 /// Handle in both
 ///
 const LLMP_TAG_EVENT_TO_BOTH: Tag = Tag(0x2B0741);
@@ -128,6 +131,15 @@ where
         self.llmp.connect_b2b(addr)
     }
 
+    /// Connect to an llmp to master on the givien address
+    #[cfg(feature = "std")]
+    pub fn connect_b2m<A>(&mut self, addr: A, send_limit: u32, recv_limit: u32) -> Result<(), Error>
+    where
+        A: ToSocketAddrs,
+    {
+        self.llmp.connect_b2m(addr, send_limit, recv_limit)
+    }
+
     /// Run forever in the broker
     #[cfg(not(feature = "llmp_broker_timeouts"))]
     pub fn broker_loop(&mut self) -> Result<(), Error> {
@@ -148,7 +160,7 @@ where
                     } else {
                         msg
                     };
-                    let event: Event<I> = postcard::from_bytes(event_bytes)?;
+                    let event: Event<I> = rmp_serde::from_slice(event_bytes)?;
                     match Self::handle_in_broker(monitor, client_id, &event)? {
                         BrokerEventResult::Forward => Ok(llmp::LlmpMsgHookResult::ForwardToClients),
                         BrokerEventResult::Handled => Ok(llmp::LlmpMsgHookResult::Handled),
@@ -166,6 +178,7 @@ where
         Err(Error::shutting_down())
     }
 
+    // WTF???по сути самая важная штука
     /// Run in the broker until all clients exit
     #[cfg(feature = "llmp_broker_timeouts")]
     pub fn broker_loop(&mut self) -> Result<(), Error> {
@@ -187,13 +200,21 @@ where
                         } else {
                             msg
                         };
-                        let event: Event<I> = postcard::from_bytes(event_bytes)?;
+                        let event: Event<I> = rmp_serde::from_slice(event_bytes)?;
                         match Self::handle_in_broker(monitor, client_id, &event)? {
                             BrokerEventResult::Forward => {
                                 Ok(llmp::LlmpMsgHookResult::ForwardToClients)
                             }
+                            BrokerEventResult::ForwardToMaster => {
+                                Ok(llmp::LlmpMsgHookResult::ForwardToMaster)
+                            }
+                            BrokerEventResult::ForwardBoth => {
+                                Ok(llmp::LlmpMsgHookResult::ForwardToMaster)
+                            }
                             BrokerEventResult::Handled => Ok(llmp::LlmpMsgHookResult::Handled),
                         }
+                    } else if tag == LLMP_TAG_EVENT_TO_MASTER {
+                        Ok(llmp::LlmpMsgHookResult::ForwardToMaster)
                     } else {
                         Ok(llmp::LlmpMsgHookResult::ForwardToClients)
                     }
@@ -233,7 +254,7 @@ where
                 client.update_corpus_size(*corpus_size as u64);
                 client.update_executions(*executions as u64, *time);
                 monitor.display(event.name().to_string(), client_id);
-                Ok(BrokerEventResult::Forward)
+                Ok(BrokerEventResult::ForwardBoth)
             }
             Event::UpdateExecStats {
                 time,
@@ -244,6 +265,7 @@ where
                 let client = monitor.client_stats_mut_for(client_id);
                 client.update_executions(*executions as u64, *time);
                 monitor.display(event.name().to_string(), client_id);
+                // WTF - тут если что кол-во исполнений убивать а то они часто уж меняются
                 Ok(BrokerEventResult::Handled)
             }
             Event::UpdateUserStats {
@@ -376,9 +398,10 @@ where
         shmem_provider: SP,
         port: u16,
         configuration: EventConfig,
+        fuzz_conf: Option<FuzzerConfiguration>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
+            llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port, fuzz_conf)?,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             configuration,
@@ -462,7 +485,7 @@ where
                     && observers_buf.is_some()
                 {
                     let observers: E::Observers =
-                        postcard::from_bytes(observers_buf.as_ref().unwrap())?;
+                        rmp_serde::from_slice(observers_buf.as_ref().unwrap())?;
                     fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?
                 } else {
                     fuzzer.evaluate_input_with_observers::<E, Self>(
@@ -475,6 +498,7 @@ where
                 Ok(())
             }
             Event::CustomBuf { tag, buf } => {
+                // WTF что-то про кастомные бафы
                 for handler in &mut self.custom_buf_handlers {
                     if handler(state, &tag, &buf)? == CustomBufEventResult::Handled {
                         break;
@@ -518,8 +542,23 @@ where
         _state: &mut Self::State,
         event: Event<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
-        let serialized = postcard::to_allocvec(&event)?;
-        let flags = LLMP_FLAG_INITIALIZED;
+        use crate::bolts::llmp::{
+            LLMP_EXECS, LLMP_FLAG_B2M, LLMP_FLAG_FROM_B2B, LLMP_NEW_TEST_CASE,
+        };
+
+        let serialized = rmp_serde::to_vec(&event)?;
+        let flags = match event {
+            Event::NewTestcase {
+                input: _,
+                observers_buf: _,
+                exit_kind: _,
+                corpus_size: _,
+                client_config: _,
+                time: _,
+                executions: _,
+            } => LLMP_FLAG_FROM_B2B | LLMP_FLAG_B2M | LLMP_NEW_TEST_CASE,
+            _ => LLMP_FLAG_INITIALIZED,
+        };
 
         match self.compressor.compress(&serialized)? {
             Some(comp_buf) => {
@@ -530,7 +569,8 @@ where
                 )?;
             }
             None => {
-                self.llmp.send_buf(LLMP_TAG_EVENT_TO_BOTH, &serialized)?;
+                self.llmp
+                    .send_buf_with_flags(LLMP_TAG_EVENT_TO_BOTH, flags, &serialized)?;
             }
         }
         Ok(())
@@ -542,7 +582,7 @@ where
         _state: &mut Self::State,
         event: Event<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
-        let serialized = postcard::to_allocvec(&event)?;
+        let serialized = rmp_serde::to_vec(&event)?;
         self.llmp.send_buf(LLMP_TAG_EVENT_TO_BOTH, &serialized)?;
         Ok(())
     }
@@ -602,7 +642,7 @@ where
             } else {
                 msg
             };
-            let event: Event<S::Input> = postcard::from_bytes(event_bytes)?;
+            let event: Event<S::Input> = rmp_serde::from_slice(event_bytes)?;
             self.handle_in_client(fuzzer, executor, state, client_id, event)?;
             count += 1;
         }
@@ -826,6 +866,7 @@ pub fn setup_restarting_mgr_std<MT, S>(
     monitor: MT,
     broker_port: u16,
     configuration: EventConfig,
+    fuzzer_conf: Option<FuzzerConfiguration>,
 ) -> Result<(Option<S>, LlmpRestartingEventManager<S, StdShMemProvider>), Error>
 where
     MT: Monitor + Clone,
@@ -836,6 +877,7 @@ where
         .monitor(Some(monitor))
         .broker_port(broker_port)
         .configuration(configuration)
+        .fuzzer_configuration(fuzzer_conf)
         .build()
         .launch()
 }
@@ -867,6 +909,9 @@ where
     /// The address to connect to
     #[builder(default = None)]
     remote_broker_addr: Option<SocketAddr>,
+    /// The address to connect master, send_limit and recv_limit
+    #[builder(default = None)]
+    master_connection_settings: Option<(SocketAddr, u32, u32)>,
     /// The type of manager to build
     #[builder(default = ManagerKind::Any)]
     kind: ManagerKind,
@@ -880,6 +925,8 @@ where
     exit_cleanly_after: Option<NonZeroUsize>,
     #[builder(setter(skip), default = PhantomData)]
     phantom_data: PhantomData<S>,
+    #[builder(default = None)]
+    fuzzer_configuration: Option<FuzzerConfiguration>,
 }
 
 #[cfg(feature = "std")]
@@ -903,6 +950,13 @@ where
                     broker.connect_b2b(remote_broker_addr)?;
                 };
 
+                if let Some((remote_master_addr, send_limit, recv_limit)) =
+                    self.master_connection_settings
+                {
+                    log::info!("B2M: Connecting to {:?}", &remote_broker_addr);
+                    broker.connect_b2m(remote_master_addr, send_limit, recv_limit)?;
+                };
+
                 if let Some(exit_cleanly_after) = self.exit_cleanly_after {
                     broker.set_exit_cleanly_after(exit_cleanly_after);
                 }
@@ -913,8 +967,11 @@ where
             // We get here if we are on Unix, or we are a broker on Windows (or without forks).
             let (mgr, core_id) = match self.kind {
                 ManagerKind::Any => {
-                    let connection =
-                        LlmpConnection::on_port(self.shmem_provider.clone(), self.broker_port)?;
+                    let connection = LlmpConnection::on_port(
+                        self.shmem_provider.clone(),
+                        self.broker_port,
+                        self.fuzzer_configuration.clone(),
+                    )?;
                     match connection {
                         LlmpConnection::IsBroker { broker } => {
                             let event_broker = LlmpEventBroker::<S::Input, MT, SP>::new(
@@ -953,6 +1010,7 @@ where
                         self.shmem_provider.clone(),
                         self.broker_port,
                         self.configuration,
+                        self.fuzzer_configuration.clone(),
                     )?;
 
                     (mgr, cpu_core)
@@ -1170,11 +1228,12 @@ where
     pub fn new_on_port(
         shmem_provider: SP,
         port: u16,
+        fuzzer_conf: Option<FuzzerConfiguration>,
         converter: Option<IC>,
         converter_back: Option<ICB>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
+            llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port, fuzzer_conf)?,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             converter,
@@ -1184,7 +1243,7 @@ where
         })
     }
 
-    /// If a client respawns, it may reuse the existing connection, previously stored by [`LlmpClient::to_env()`].
+    /// If a client respawns, it may reuse the existing connection, previously stored by `LlmpClient::to_env()`.
     #[cfg(feature = "std")]
     pub fn existing_client_from_env(
         shmem_provider: SP,
@@ -1324,7 +1383,7 @@ where
                 msg
             };
 
-            let event: Event<DI> = postcard::from_bytes(event_bytes)?;
+            let event: Event<DI> = rmp_serde::from_slice(event_bytes)?;
             self.handle_in_client(fuzzer, executor, state, manager, client_id, event)?;
             count += 1;
         }
@@ -1385,7 +1444,7 @@ where
                 return Ok(());
             }
         };
-        let serialized = postcard::to_allocvec(&converted_event)?;
+        let serialized = rmp_serde::to_vec(&converted_event)?;
         let flags = LLMP_FLAG_INITIALIZED;
 
         match self.compressor.compress(&serialized)? {
@@ -1437,7 +1496,7 @@ where
                 return Ok(());
             }
         };
-        let serialized = postcard::to_allocvec(&converted_event)?;
+        let serialized = rmp_serde::to_vec(&converted_event)?;
         self.llmp.send_buf(LLMP_TAG_EVENT_TO_BOTH, &serialized)?;
         Ok(())
     }

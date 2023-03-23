@@ -2,6 +2,7 @@
 //!
 use alloc::vec::Vec;
 use core::cmp::{max, min};
+use std::prelude::v1::String;
 
 use crate::{
     bolts::{
@@ -12,7 +13,7 @@ use crate::{
     inputs::{EncodedInput, UsesInput},
     mutators::{
         mutations::{buffer_copy, buffer_self_copy, ARITH_MAX},
-        MutationResult, Mutator, Named,
+        MutationResult, Mutator, MutatorID, Named,
     },
     random_corpus_id,
     state::{HasCorpus, HasMaxSize, HasRand},
@@ -24,6 +25,11 @@ use crate::{
 pub struct EncodedRandMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedRandMutator {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedRandMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -59,6 +65,11 @@ impl EncodedRandMutator {
 pub struct EncodedIncMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedIncMutator {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedIncMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -94,6 +105,10 @@ impl EncodedIncMutator {
 pub struct EncodedDecMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedDecMutator {
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedDecMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -129,6 +144,9 @@ impl EncodedDecMutator {
 pub struct EncodedAddMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedAddMutator {
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedAddMutator")), false);
+    }
     fn mutate(
         &mut self,
         state: &mut S,
@@ -168,6 +186,10 @@ impl EncodedAddMutator {
 pub struct EncodedDeleteMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedDeleteMutator {
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedDeleteMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -211,6 +233,10 @@ impl<S> Mutator<EncodedInput, S> for EncodedInsertCopyMutator
 where
     S: HasRand + HasMaxSize,
 {
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedInsertCopyMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -269,6 +295,10 @@ impl EncodedInsertCopyMutator {
 pub struct EncodedCopyMutator;
 
 impl<S: HasRand> Mutator<EncodedInput, S> for EncodedCopyMutator {
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("EncodedCopyMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -312,6 +342,13 @@ impl<S> Mutator<S::Input, S> for EncodedCrossoverInsertMutator
 where
     S: UsesInput<Input = EncodedInput> + HasRand + HasCorpus + HasMaxSize,
 {
+    fn get_id() -> (MutatorID, bool) {
+        return (
+            MutatorID(String::from("EncodedCrossoverInsertMutator")),
+            false,
+        );
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -385,6 +422,13 @@ impl<S> Mutator<S::Input, S> for EncodedCrossoverReplaceMutator
 where
     S: UsesInput<Input = EncodedInput> + HasRand + HasCorpus,
 {
+    fn get_id() -> (MutatorID, bool) {
+        return (
+            MutatorID(String::from("EncodedCrossoverReplaceMutator")),
+            false,
+        );
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,

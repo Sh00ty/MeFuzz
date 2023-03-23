@@ -25,54 +25,54 @@ RUN apt update && apt install -y build-essential gdb git wget clang clang-tools 
 WORKDIR /libafl
 COPY Cargo.toml README.md ./
 
-COPY libafl_derive/Cargo.toml libafl_derive/Cargo.toml
+COPY fuzzers/libafl_derive/Cargo.toml libafl_derive/Cargo.toml
 COPY scripts/dummy.rs libafl_derive/src/lib.rs
 
 COPY libafl/Cargo.toml libafl/build.rs libafl/
 COPY libafl/examples libafl/examples
 COPY scripts/dummy.rs libafl/src/lib.rs
 
-COPY libafl_frida/Cargo.toml libafl_frida/build.rs libafl_frida/
+COPY fuzzers/libafl_frida/Cargo.toml libafl_frida/build.rs libafl_frida/
 COPY scripts/dummy.rs libafl_frida/src/lib.rs
-COPY libafl_frida/src/gettls.c libafl_frida/src/gettls.c
+COPY fuzzers/libafl_frida/src/gettls.c libafl_frida/src/gettls.c
 
-COPY libafl_qemu/Cargo.toml libafl_qemu/build.rs libafl_qemu/
+COPY fuzzers/libafl_qemu/Cargo.toml libafl_qemu/build.rs libafl_qemu/
 COPY scripts/dummy.rs libafl_qemu/src/lib.rs
 
-COPY libafl_qemu/libafl_qemu_build/Cargo.toml libafl_qemu/libafl_qemu_build/
+COPY fuzzers/libafl_qemu/libafl_qemu_build/Cargo.toml libafl_qemu/libafl_qemu_build/
 COPY scripts/dummy.rs libafl_qemu/libafl_qemu_build/src/lib.rs
 
-COPY libafl_qemu/libafl_qemu_sys/Cargo.toml libafl_qemu/libafl_qemu_sys/build.rs libafl_qemu/libafl_qemu_sys/
+COPY fuzzers/libafl_qemu/libafl_qemu_sys/Cargo.toml libafl_qemu/libafl_qemu_sys/build.rs libafl_qemu/libafl_qemu_sys/
 COPY scripts/dummy.rs libafl_qemu/libafl_qemu_sys/src/lib.rs
 
-COPY libafl_sugar/Cargo.toml libafl_sugar/
+COPY fuzzers/libafl_sugar/Cargo.toml libafl_sugar/
 COPY scripts/dummy.rs libafl_sugar/src/lib.rs
 
-COPY libafl_cc/Cargo.toml libafl_cc/Cargo.toml
-COPY libafl_cc/build.rs libafl_cc/build.rs
-COPY libafl_cc/src libafl_cc/src
+COPY fuzzers/libafl_cc/Cargo.toml libafl_cc/Cargo.toml
+COPY fuzzers/libafl_cc/build.rs libafl_cc/build.rs
+COPY fuzzers/libafl_cc/src libafl_cc/src
 COPY scripts/dummy.rs libafl_cc/src/lib.rs
 
-COPY libafl_targets/Cargo.toml libafl_targets/build.rs libafl_targets/
-COPY libafl_targets/src libafl_targets/src
+COPY fuzzers/libafl_targets/Cargo.toml libafl_targets/build.rs libafl_targets/
+COPY fuzzers/libafl_targets/src libafl_targets/src
 COPY scripts/dummy.rs libafl_targets/src/lib.rs
 
-COPY libafl_concolic/test/dump_constraints/Cargo.toml libafl_concolic/test/dump_constraints/
+COPY fuzzers/libafl_concolic/test/dump_constraints/Cargo.toml libafl_concolic/test/dump_constraints/
 COPY scripts/dummy.rs libafl_concolic/test/dump_constraints/src/lib.rs
 
-COPY libafl_concolic/test/runtime_test/Cargo.toml libafl_concolic/test/runtime_test/
+COPY fuzzers/libafl_concolic/test/runtime_test/Cargo.toml libafl_concolic/test/runtime_test/
 COPY scripts/dummy.rs libafl_concolic/test/runtime_test/src/lib.rs
 
-COPY libafl_concolic/symcc_runtime/Cargo.toml libafl_concolic/symcc_runtime/build.rs libafl_concolic/symcc_runtime/
+COPY fuzzers/libafl_concolic/symcc_runtime/Cargo.toml libafl_concolic/symcc_runtime/build.rs libafl_concolic/symcc_runtime/
 COPY scripts/dummy.rs libafl_concolic/symcc_runtime/src/lib.rs
 
-COPY libafl_concolic/symcc_libafl/Cargo.toml libafl_concolic/symcc_libafl/
+COPY fuzzers/libafl_concolic/symcc_libafl/Cargo.toml libafl_concolic/symcc_libafl/
 COPY scripts/dummy.rs libafl_concolic/symcc_libafl/src/lib.rs
 
-COPY libafl_nyx/Cargo.toml libafl_nyx/build.rs libafl_nyx/
+COPY fuzzers/libafl_nyx/Cargo.toml libafl_nyx/build.rs libafl_nyx/
 COPY scripts/dummy.rs libafl_nyx/src/lib.rs
 
-COPY libafl_tinyinst/Cargo.toml libafl_tinyinst/
+COPY fuzzers/libafl_tinyinst/Cargo.toml libafl_tinyinst/
 COPY scripts/dummy.rs libafl_tinyinst/src/lib.rs
 
 COPY utils utils
@@ -91,26 +91,26 @@ COPY docs docs
 # libafl_targets -> libafl_frida
 
 # Build once without source
-COPY libafl_cc/src libafl_cc/src
+COPY fuzzers/libafl_cc/src libafl_cc/src
 RUN touch libafl_cc/src/lib.rs
-COPY libafl_derive/src libafl_derive/src
+COPY fuzzers/libafl_derive/src libafl_derive/src
 RUN touch libafl_derive/src/lib.rs
 COPY libafl/src libafl/src
 RUN touch libafl/src/lib.rs
-COPY libafl_targets/src libafl_targets/src
+COPY fuzzers/libafl_targets/src libafl_targets/src
 RUN touch libafl_targets/src/lib.rs
-COPY libafl_frida/src libafl_frida/src
+COPY fuzzers/libafl_frida/src libafl_frida/src
 RUN touch libafl_qemu/libafl_qemu_build/src/lib.rs
-COPY libafl_qemu/libafl_qemu_build/src libafl_qemu/libafl_qemu_build/src
+COPY fuzzers/libafl_qemu/libafl_qemu_build/src libafl_qemu/libafl_qemu_build/src
 RUN touch libafl_qemu/libafl_qemu_sys/src/lib.rs
-COPY libafl_qemu/libafl_qemu_sys/src libafl_qemu/libafl_qemu_sys/src
+COPY fuzzers/libafl_qemu/libafl_qemu_sys/src libafl_qemu/libafl_qemu_sys/src
 RUN touch libafl_qemu/src/lib.rs
-COPY libafl_qemu/src libafl_qemu/src
+COPY fuzzers/libafl_qemu/src libafl_qemu/src
 RUN touch libafl_frida/src/lib.rs
-COPY libafl_concolic/symcc_libafl libafl_concolic/symcc_libafl
-COPY libafl_concolic/symcc_runtime libafl_concolic/symcc_runtime
-COPY libafl_concolic/test libafl_concolic/test
-COPY libafl_nyx/src libafl_nyx/src
+COPY fuzzers/libafl_concolic/symcc_libafl libafl_concolic/symcc_libafl
+COPY fuzzers/libafl_concolic/symcc_runtime libafl_concolic/symcc_runtime
+COPY fuzzers/libafl_concolic/test libafl_concolic/test
+COPY fuzzers/libafl_nyx/src libafl_nyx/src
 RUN touch libafl_nyx/src/lib.rs
 RUN cargo build && cargo build --release
 

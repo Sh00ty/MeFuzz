@@ -332,7 +332,7 @@ fn main() {
     state_stacks.s.clear();
 
     let transformed = postprocess(&pda, stack_limit);
-    let serialized = postcard::to_allocvec(&transformed).unwrap();
+    let serialized = rmp_serde::to_vec(&transformed).unwrap();
 
     let mut file = fs::File::create(output_file).unwrap();
     file.write_all(&serialized).unwrap();

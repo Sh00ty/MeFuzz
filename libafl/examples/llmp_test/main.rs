@@ -6,8 +6,11 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use core::time::Duration;
 #[cfg(feature = "std")]
-use std::{num::NonZeroUsize, thread, time};
+use std::{num::NonZeroUsize, sync::RwLock, thread, time};
 
+use libafl::mutators::MutatorID;
+use libafl::schedulers::SchedulerID;
+use libafl::FuzzerConfiguration;
 #[cfg(feature = "std")]
 use libafl::{
     bolts::{
@@ -39,7 +42,14 @@ static LOGGER: SimpleStderrLogger = SimpleStderrLogger::new();
 #[cfg(feature = "std")]
 fn adder_loop(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let shmem_provider = StdShMemProvider::new()?;
-    let mut client = llmp::LlmpClient::create_attach_to_tcp(shmem_provider, port)?;
+    let mut client = llmp::LlmpClient::create_attach_to_tcp(
+        shmem_provider,
+        port,
+        Some(FuzzerConfiguration {
+            mutator_id: MutatorID(String::from("ctr")),
+            scheduler_id: SchedulerID(String::from("ctr")),
+        }),
+    )?;
     let mut last_result: u32 = 0;
     let mut current_result: u32 = 0;
     loop {
@@ -74,7 +84,14 @@ fn adder_loop(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "std")]
 fn large_msg_loop(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = llmp::LlmpClient::create_attach_to_tcp(StdShMemProvider::new()?, port)?;
+    let mut client = llmp::LlmpClient::create_attach_to_tcp(
+        StdShMemProvider::new()?,
+        port,
+        Some(FuzzerConfiguration {
+            mutator_id: MutatorID(String::from("large_msg_loop")),
+            scheduler_id: SchedulerID(String::from("large_msg_loop")),
+        }),
+    )?;
 
     #[cfg(not(target_vendor = "apple"))]
     let meg_buf = vec![1u8; 1 << 20];
@@ -135,6 +152,8 @@ fn main() {
 #[cfg(any(unix, windows))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     /* The main node has a broker, and a few worker threads */
+    use core::panic;
+    use std::sync::Arc;
 
     let mode = std::env::args()
         .nth(1)
@@ -178,14 +197,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         "ctr" => {
-            let mut client =
-                llmp::LlmpClient::create_attach_to_tcp(StdShMemProvider::new()?, port)?;
+            let mut client = llmp::LlmpClient::create_attach_to_tcp(
+                StdShMemProvider::new()?,
+                port,
+                Some(FuzzerConfiguration {
+                    mutator_id: MutatorID(String::from("ctr")),
+                    scheduler_id: SchedulerID(String::from("ctr")),
+                }),
+            )?;
             let mut counter: u32 = 0;
             loop {
                 counter = counter.wrapping_add(1);
                 client.send_buf(_TAG_SIMPLE_U32_V1, &counter.to_le_bytes())?;
                 println!("CTR Client writing {counter}");
-                thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_secs(5));
             }
         }
         "adder" => {
@@ -195,8 +220,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             large_msg_loop(port)?;
         }
         "exiting" => {
-            let mut client =
-                llmp::LlmpClient::create_attach_to_tcp(StdShMemProvider::new()?, port)?;
+            let mut client = llmp::LlmpClient::create_attach_to_tcp(
+                StdShMemProvider::new()?,
+                port,
+                Some(FuzzerConfiguration {
+                    mutator_id: MutatorID(String::from("ctr")),
+                    scheduler_id: SchedulerID(String::from("ctr")),
+                }),
+            )?;
             for i in 0..10_u32 {
                 client.send_buf(_TAG_SIMPLE_U32_V1, &i.to_le_bytes())?;
                 println!("Exiting Client writing {i}");

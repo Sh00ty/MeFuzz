@@ -2,11 +2,12 @@
 
 use alloc::borrow::ToOwned;
 use core::marker::PhantomData;
+use std::prelude::v1::String;
 
 use crate::{
     corpus::{Corpus, CorpusId},
     inputs::UsesInput,
-    schedulers::Scheduler,
+    schedulers::{Scheduler, SchedulerID},
     state::{HasCorpus, UsesState},
     Error,
 };
@@ -28,6 +29,10 @@ impl<S> Scheduler for QueueScheduler<S>
 where
     S: HasCorpus,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("Queue")), false, false);
+    }
     /// Gets the next entry in the queue
     fn next(&mut self, state: &mut Self::State) -> Result<CorpusId, Error> {
         if state.corpus().count() == 0 {

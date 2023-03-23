@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::fmt::Debug;
+use std::prelude::v1::String;
 
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use crate::{
     inputs::UsesInput,
     schedulers::{
         minimizer::{IsFavoredMetadata, MinimizerScheduler, DEFAULT_SKIP_NON_FAVORED_PROB},
-        LenTimeMulTestcaseScore, Scheduler,
+        LenTimeMulTestcaseScore, Scheduler, SchedulerID,
     },
     state::{HasCorpus, HasMetadata, HasRand, UsesState},
     Error,
@@ -125,6 +126,11 @@ where
     CS::State: HasCorpus + HasMetadata + HasRand + Debug,
     <CS::State as UsesInput>::Input: HasLen,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("Account")), true, false);
+    }
+
     fn on_add(&mut self, state: &mut Self::State, idx: CorpusId) -> Result<(), Error> {
         self.update_accounting_score(state, idx)?;
         self.inner.on_add(state, idx)

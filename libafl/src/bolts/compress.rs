@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use miniz_oxide::{
-    deflate::{compress_to_vec, CompressionLevel},
-    inflate::decompress_to_vec,
+    deflate::{compress_to_vec_zlib, CompressionLevel},
+    inflate::decompress_to_vec_zlib,
 };
 
 use crate::Error;
@@ -34,7 +34,7 @@ impl GzipCompressor {
     pub fn compress(&self, buf: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         if buf.len() >= self.threshold {
             //compress if the buffer is large enough
-            let compressed = compress_to_vec(buf, CompressionLevel::BestSpeed as u8);
+            let compressed = compress_to_vec_zlib(buf, CompressionLevel::BestSpeed as u8);
             Ok(Some(compressed))
         } else {
             Ok(None)
@@ -45,7 +45,7 @@ impl GzipCompressor {
     /// Flag is used to indicate if it's compressed or not
     #[allow(clippy::unused_self)]
     pub fn decompress(&self, buf: &[u8]) -> Result<Vec<u8>, Error> {
-        let decompressed = decompress_to_vec(buf);
+        let decompressed = decompress_to_vec_zlib(buf);
 
         match decompressed {
             Ok(buf) => Ok(buf),

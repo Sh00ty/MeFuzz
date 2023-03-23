@@ -2,12 +2,13 @@
 
 use alloc::{borrow::ToOwned, vec::Vec};
 use core::{cmp::min, mem::size_of, ops::Range};
+use std::prelude::v1::String;
 
 use crate::{
     bolts::{rands::Rand, tuples::Named},
     corpus::Corpus,
     inputs::HasBytesVec,
-    mutators::{MutationResult, Mutator},
+    mutators::{MutationResult, Mutator, MutatorID},
     random_corpus_id,
     state::{HasCorpus, HasMaxSize, HasRand},
     Error,
@@ -120,6 +121,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BitFlipMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -160,6 +166,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("ByteFlipMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -198,6 +209,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("ByteIncMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -237,6 +253,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("ByteDecMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -276,6 +297,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("ByteNegMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -315,6 +341,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("ByteRandMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -359,6 +390,10 @@ macro_rules! add_mutator_impl {
             S: HasRand,
             I: HasBytesVec,
         {
+            fn get_id() -> (MutatorID, bool) {
+                return (MutatorID(String::from("add_mutator_impl")), true);
+            }
+
             fn mutate(
                 &mut self,
                 state: &mut S,
@@ -425,6 +460,10 @@ macro_rules! interesting_mutator_impl {
             S: HasRand,
             I: HasBytesVec,
         {
+            fn get_id() -> (MutatorID, bool) {
+                return (MutatorID(String::from("interesting_mutator_impl")), true);
+            }
+
             #[allow(clippy::cast_sign_loss)]
             fn mutate(
                 &mut self,
@@ -478,6 +517,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesDeleteMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -523,6 +567,11 @@ where
     S: HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesExpandMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -574,6 +623,11 @@ where
     S: HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesInsertMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -622,6 +676,11 @@ where
     S: HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesRandInsertMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -670,6 +729,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesSetMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -718,6 +782,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesRandSetMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -766,6 +835,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesCopyMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -811,6 +885,11 @@ where
     S: HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesInsertCopyMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -863,6 +942,11 @@ where
     S: HasRand,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("BytesSwapMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -929,6 +1013,11 @@ where
     S: HasCorpus + HasRand + HasMaxSize,
     S::Input: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("CrossoverInsertMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -998,6 +1087,11 @@ where
     S: HasCorpus + HasRand,
     S::Input: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("CrossoverReplaceMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -1082,6 +1176,11 @@ where
     S: HasCorpus + HasRand,
     S::Input: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("SpliceMutator")), true);
+    }
+
     #[allow(clippy::cast_sign_loss)]
     fn mutate(
         &mut self,

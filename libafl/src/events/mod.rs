@@ -171,7 +171,14 @@ pub enum BrokerEventResult {
     Handled,
     /// Pass this message along to the clients.
     Forward,
+    /// Forward to master
+    ForwardToMaster,
+    /// и на мастер и просто
+    ForwardBoth,
 }
+
+// WTF
+// pub enum MasterEnentResult
 
 /// Distinguish a fuzzer by its config
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +253,7 @@ impl From<String> for EventConfig {
     }
 }
 
+// WTF очень полезная фигня, прям респект
 /*
 /// A custom event, for own messages, with own handler.
 pub trait CustomEvent<I>: SerdeAny
@@ -344,6 +352,8 @@ where
         // TODO: Allow custom events
         // custom_event: Box<dyn CustomEvent<I, OT>>,
     },*/
+
+    // WTF что-то свое можно бахнуть (но вообще выглядит хайпово)
 }
 
 impl<I> Event<I>
@@ -431,7 +441,7 @@ pub trait EventFirer: UsesState {
     where
         OT: ObserversTuple<Self::State> + Serialize,
     {
-        Ok(postcard::to_allocvec(observers)?)
+        Ok(rmp_serde::to_vec(observers)?)
     }
 
     /// Get the configuration
@@ -545,6 +555,7 @@ where
 {
 }
 
+// WTF Выглядит позезно???
 /// The handler function for custom buffers exchanged via [`EventManager`]
 type CustomBufHandlerFn<S> =
     dyn FnMut(&mut S, &String, &[u8]) -> Result<CustomBufEventResult, Error>;
@@ -658,7 +669,7 @@ mod tests {
     fn test_event_serde() {
         let obv = unsafe { StdMapObserver::new("test", &mut MAP) };
         let map = tuple_list!(obv);
-        let observers_buf = postcard::to_allocvec(&map).unwrap();
+        let observers_buf = rmp_serde::to_vec(&map).unwrap();
 
         let i = BytesInput::new(vec![0]);
         let e = Event::NewTestcase {
@@ -671,9 +682,9 @@ mod tests {
             executions: 0,
         };
 
-        let serialized = postcard::to_allocvec(&e).unwrap();
+        let serialized = rmp_serde::to_vec(&e).unwrap();
 
-        let d = postcard::from_bytes::<Event<BytesInput>>(&serialized).unwrap();
+        let d = rmp_serde::from_slice::<Event<BytesInput>>(&serialized).unwrap();
         match d {
             Event::NewTestcase {
                 input: _,
@@ -685,7 +696,7 @@ mod tests {
                 executions: _,
             } => {
                 let o: tuple_list_type!(StdMapObserver::<u32, false>) =
-                    postcard::from_bytes(observers_buf.as_ref().unwrap()).unwrap();
+                    rmp_serde::from_slice(observers_buf.as_ref().unwrap()).unwrap();
                 assert_eq!("test", o.0.name());
             }
             _ => panic!("mistmatch"),

@@ -98,6 +98,8 @@ where
     ) -> Result<(), Error> {
         match Self::handle_in_broker(&mut self.monitor, &event)? {
             BrokerEventResult::Forward => self.events.push(event),
+            BrokerEventResult::ForwardToMaster => self.events.push(event),
+            BrokerEventResult::ForwardBoth => self.events.push(event),
             BrokerEventResult::Handled => (),
         };
         Ok(())

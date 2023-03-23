@@ -124,7 +124,7 @@ where
         //let bt = Backtrace::new();
         //log::info!("Sending {:?} with bt:\n{:?}", request, bt);
 
-        let body = postcard::to_allocvec(&request)?;
+        let body = rmp_serde::to_vec(&request)?;
 
         let header = (body.len() as u32).to_be_bytes();
         let mut message = header.to_vec();
@@ -357,7 +357,7 @@ impl Drop for ShMemServiceThread {
                 &UnixSocketAddr::new(UNIX_SERVER_NAME).unwrap(),
             ) else { return };
 
-            let body = postcard::to_allocvec(&ServedShMemRequest::Exit).unwrap();
+            let body = rmp_serde::to_vec(&ServedShMemRequest::Exit).unwrap();
 
             let header = (body.len() as u32).to_be_bytes();
             let mut message = header.to_vec();
@@ -611,7 +611,7 @@ where
             .stream
             .read_exact(&mut bytes)
             .expect("Failed to read message body");
-        let request: ServedShMemRequest = postcard::from_bytes(&bytes)?;
+        let request: ServedShMemRequest = rmp_serde::from_slice(&bytes)?;
 
         Ok(request)
     }

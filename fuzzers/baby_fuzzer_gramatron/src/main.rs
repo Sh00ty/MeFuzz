@@ -40,7 +40,7 @@ fn read_automaton_from_file<P: AsRef<Path>>(path: P) -> Automaton {
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
     reader.read_to_end(&mut buffer).unwrap();
-    postcard::from_bytes(&buffer).unwrap()
+    rmp_serde::from_slice(&buffer).unwrap()
 }
 
 #[allow(clippy::similar_names)]

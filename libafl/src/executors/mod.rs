@@ -65,6 +65,8 @@ pub enum ExitKind {
     },
     // The run resulted in a custom `ExitKind`.
     // Custom(Box<dyn SerdeAny>),
+
+    // WTF штука чтобы делать собественные
 }
 
 /// How one of the diffing executions finished.

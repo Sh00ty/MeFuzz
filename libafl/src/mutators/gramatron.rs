@@ -2,6 +2,7 @@
 //! See the original gramatron repo [`Gramatron`](https://github.com/HexHive/Gramatron) for more details.
 use alloc::vec::Vec;
 use core::cmp::max;
+use std::prelude::v1::String;
 
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use crate::{
     corpus::Corpus,
     generators::GramatronGenerator,
     inputs::{GramatronInput, Terminal},
-    mutators::{MutationResult, Mutator},
+    mutators::{MutationResult, Mutator, MutatorID},
     random_corpus_id,
     state::{HasCorpus, HasMetadata, HasRand},
     Error,
@@ -32,6 +33,11 @@ impl<'a, S> Mutator<GramatronInput, S> for GramatronRandomMutator<'a, S>
 where
     S: HasRand + HasMetadata,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("GramatronRandomMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -101,6 +107,11 @@ impl<S> Mutator<S::Input, S> for GramatronSpliceMutator
 where
     S: HasRand + HasCorpus<Input = GramatronInput> + HasMetadata,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("GramatronSpliceMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -173,6 +184,11 @@ impl<S> Mutator<GramatronInput, S> for GramatronRecursionMutator
 where
     S: HasRand + HasMetadata,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("GramatronRecursionMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,

@@ -21,16 +21,18 @@ use libafl::{
     executors::{inprocess::InProcessExecutor, ExitKind, TimeoutExecutor},
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
-    fuzzer::{Fuzzer, StdFuzzer},
+    fuzzer::{Fuzzer, FuzzerConfiguration, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
     monitors::MultiMonitor,
     mutators::{
         scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
         token_mutations::Tokens,
+        MutatorID,
     },
     observers::{HitcountsMapObserver, StdMapObserver, TimeObserver},
     schedulers::{
-        powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
+        powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, SchedulerID,
+        StdWeightedScheduler,
     },
     stages::{calibrate::CalibrationStage, power::StdPowerMutationalStage},
     state::{HasCorpus, HasMetadata, StdState},
@@ -65,18 +67,25 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
     let monitor = MultiMonitor::new(|s| println!("{s}"));
 
     // The restarting state will spawn the same process again as child, then restarted it each time it crashes.
-    let (state, mut restarting_mgr) =
-        match setup_restarting_mgr_std(monitor, broker_port, EventConfig::AlwaysUnique) {
-            Ok(res) => res,
-            Err(err) => match err {
-                Error::ShuttingDown => {
-                    return Ok(());
-                }
-                _ => {
-                    panic!("Failed to setup the restarter: {err}");
-                }
-            },
-        };
+    let (state, mut restarting_mgr) = match setup_restarting_mgr_std(
+        monitor,
+        broker_port,
+        EventConfig::AlwaysUnique,
+        Some(FuzzerConfiguration {
+            mutator_id: MutatorID(String::from("libfuzzer")),
+            scheduler_id: SchedulerID(String::from("libfuzzer")),
+        }),
+    ) {
+        Ok(res) => res,
+        Err(err) => match err {
+            Error::ShuttingDown => {
+                return Ok(());
+            }
+            _ => {
+                panic!("Failed to setup the restarter: {err}");
+            }
+        },
+    };
 
     // Create an observation channel using the coverage map
     let edges_observer = unsafe {

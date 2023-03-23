@@ -4,6 +4,7 @@ use core::{
     fmt::{self, Debug},
     marker::PhantomData,
 };
+use std::prelude::v1::String;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +12,9 @@ use super::MutationId;
 use crate::{
     bolts::rands::{Rand, StdRand},
     corpus::{Corpus, CorpusId},
-    mutators::{ComposedByMutations, MutationResult, Mutator, MutatorsTuple, ScheduledMutator},
+    mutators::{
+        ComposedByMutations, MutationResult, Mutator, MutatorID, MutatorsTuple, ScheduledMutator,
+    },
     state::{HasCorpus, HasMetadata, HasRand, HasSolutions},
     Error,
 };
@@ -392,6 +395,11 @@ where
     MT: MutatorsTuple<I, S>,
     S: HasRand + HasMetadata + HasCorpus + HasSolutions,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("StdMOptMutator")), false);
+    }
+
     #[inline]
     fn mutate(
         &mut self,

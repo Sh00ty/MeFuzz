@@ -44,7 +44,7 @@ impl StateShMemContent {
             let bytes = unsafe {
                 slice::from_raw_parts(self.buf.as_ptr(), self.buf_len_checked(shmem_size)?)
             };
-            let filename = postcard::from_bytes::<String>(bytes)?;
+            let filename = rmp_serde::from_slice::<String>(bytes)?;
             Some(temp_dir().join(filename))
         } else {
             None
@@ -118,7 +118,7 @@ where
             ));
         }
 
-        let serialized = postcard::to_allocvec(state)?;
+        let serialized = rmp_serde::to_vec(state)?;
 
         if size_of::<StateShMemContent>() + serialized.len() > self.shmem.len() {
             // generate a filename
@@ -131,7 +131,7 @@ where
             File::create(tmpfile)?.write_all(&serialized)?;
 
             // write the filename to shmem
-            let filename_buf = postcard::to_allocvec(&filename)?;
+            let filename_buf = rmp_serde::to_vec(&filename)?;
 
             let len = filename_buf.len();
             if len > self.shmem.len() {
@@ -267,7 +267,7 @@ where
         if state_shmem_content.buf_len == 0 {
             return Ok(None);
         } else if state_shmem_content.is_disk {
-            let filename: String = postcard::from_bytes(bytes)?;
+            let filename: String = rmp_serde::from_slice(bytes)?;
             let tmpfile = temp_dir().join(&filename);
             file_content = vec![];
             File::open(tmpfile)?.read_to_end(&mut file_content)?;
@@ -279,7 +279,7 @@ where
             }
             state = &file_content;
         }
-        let deserialized = postcard::from_bytes(state)?;
+        let deserialized = rmp_serde::from_slice(state)?;
         Ok(Some(deserialized))
     }
 }

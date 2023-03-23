@@ -3,7 +3,7 @@
 use alloc::string::ToString;
 use core::{fmt::Debug, marker::PhantomData, time::Duration};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[cfg(test)]
 use crate::inputs::Input;
@@ -19,8 +19,9 @@ use crate::{
     feedbacks::Feedback,
     inputs::UsesInput,
     mark_feature_time,
+    mutators::MutatorID,
     observers::ObserversTuple,
-    schedulers::Scheduler,
+    schedulers::{Scheduler, SchedulerID},
     stages::StagesTuple,
     start_timer,
     state::{
@@ -95,7 +96,7 @@ pub trait ExecutionProcessor<OT>: UsesState {
 pub trait EvaluatorObservers<OT>: UsesState + Sized {
     /// Runs the input and triggers observers and feedback,
     /// returns if is interesting an (option) the index of the new
-    /// [`crate::corpus::Testcase`] in the [`crate::corpus::Corpus`]
+    /// `crate::corpus::Testcase` in the `crate::corpus::Corpus`
     fn evaluate_input_with_observers<E, EM>(
         &mut self,
         state: &mut Self::State,
@@ -116,7 +117,7 @@ where
     EM: UsesState<State = Self::State>,
 {
     /// Runs the input and triggers observers and feedback,
-    /// returns if is interesting an (option) the index of the new [`crate::corpus::Testcase`] in the corpus
+    /// returns if is interesting an (option) the index of the new `crate::corpus::Testcase` in the corpus
     fn evaluate_input(
         &mut self,
         state: &mut Self::State,
@@ -702,6 +703,12 @@ where
 
         Ok(exit_kind)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuzzerConfiguration {
+    pub mutator_id: MutatorID,
+    pub scheduler_id: SchedulerID,
 }
 
 #[cfg(test)]

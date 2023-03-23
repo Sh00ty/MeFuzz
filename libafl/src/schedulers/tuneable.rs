@@ -4,14 +4,14 @@
 
 use alloc::borrow::ToOwned;
 use core::marker::PhantomData;
-
 use serde::{Deserialize, Serialize};
+use std::prelude::v1::String;
 
 use crate::{
     corpus::{Corpus, CorpusId},
     impl_serdeany,
     inputs::UsesInput,
-    schedulers::Scheduler,
+    schedulers::{Scheduler, SchedulerID},
     state::{HasCorpus, HasMetadata, UsesState},
     Error,
 };
@@ -92,6 +92,10 @@ impl<S> Scheduler for TuneableScheduler<S>
 where
     S: HasCorpus + HasMetadata,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("Tuneable")), false, false);
+    }
     /// Gets the next entry in the queue
     fn next(&mut self, state: &mut Self::State) -> Result<CorpusId, Error> {
         if state.corpus().count() == 0 {

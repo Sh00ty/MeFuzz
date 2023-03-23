@@ -2,6 +2,8 @@
 
 use alloc::borrow::ToOwned;
 use core::marker::PhantomData;
+use serde::{Deserialize, Serialize};
+use std::prelude::v1::String;
 
 pub mod testcase_score;
 pub use testcase_score::{LenTimeMulTestcaseScore, TestcaseScore};
@@ -41,6 +43,9 @@ use crate::{
     state::{HasCorpus, HasRand, UsesState},
     Error,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerID(pub String);
 
 /// The scheduler define how the fuzzer requests a testcase from the corpus.
 /// It has hooks to corpus add/replace/remove to allow complex scheduling algorithms to collect data.
@@ -85,6 +90,8 @@ pub trait Scheduler: UsesState {
 
     /// Gets the next entry
     fn next(&mut self, state: &mut Self::State) -> Result<CorpusId, Error>;
+    /// Returns schedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool);
 }
 
 /// Feed the fuzzer simply with a random testcase on request
@@ -113,6 +120,10 @@ where
             *state.corpus_mut().current_mut() = Some(id);
             Ok(id)
         }
+    }
+
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("rand_scheduler")), true, false);
     }
 }
 

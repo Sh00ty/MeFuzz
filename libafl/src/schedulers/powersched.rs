@@ -12,7 +12,7 @@ use crate::{
     corpus::{Corpus, CorpusId, SchedulerTestcaseMetaData, Testcase},
     inputs::UsesInput,
     observers::{MapObserver, ObserversTuple},
-    schedulers::Scheduler,
+    schedulers::{Scheduler, SchedulerID},
     state::{HasCorpus, HasMetadata, UsesState},
     Error,
 };
@@ -183,6 +183,10 @@ where
     S: HasCorpus + HasMetadata,
     O: MapObserver,
 {
+    /// Returns SchedulerID, IsHavoc and IsConcolic
+    fn get_id() -> (SchedulerID, bool, bool) {
+        return (SchedulerID(String::from("PowerQueue")), false, false);
+    }
     /// Add an entry to the corpus and return its index
     fn on_add(&mut self, state: &mut Self::State, idx: CorpusId) -> Result<(), Error> {
         let current_idx = *state.corpus().current();

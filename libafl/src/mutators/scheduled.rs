@@ -17,7 +17,7 @@ use crate::{
         AsMutSlice, AsSlice,
     },
     corpus::{Corpus, CorpusId},
-    mutators::{MutationResult, Mutator, MutatorsTuple},
+    mutators::{MutationResult, Mutator, MutatorID, MutatorsTuple},
     state::{HasCorpus, HasMetadata, HasRand},
     Error,
 };
@@ -131,6 +131,11 @@ where
     MT: MutatorsTuple<I, S>,
     S: HasRand,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("StdScheduledMutator")), false);
+    }
+
     #[inline]
     fn mutate(
         &mut self,
@@ -306,6 +311,11 @@ where
     S: HasRand + HasCorpus,
     SM: ScheduledMutator<I, MT, S>,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("LoggerScheduledMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,

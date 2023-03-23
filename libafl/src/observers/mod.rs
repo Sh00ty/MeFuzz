@@ -1405,10 +1405,10 @@ mod tests {
         let obv = tuple_list!(TimeObserver::new("time"), unsafe {
             StdMapObserver::new("map", &mut MAP)
         });
-        let vec = postcard::to_allocvec(&obv).unwrap();
+        let vec = rmp_serde::to_vec(&obv).unwrap();
         log::info!("{vec:?}");
         let obv2: tuple_list_type!(TimeObserver, StdMapObserver<u32, false>) =
-            postcard::from_bytes(&vec).unwrap();
+            rmp_serde::from_slice(&vec).unwrap();
         assert_eq!(obv.0.name(), obv2.0.name());
     }
 }

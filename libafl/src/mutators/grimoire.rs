@@ -3,12 +3,13 @@
 
 use alloc::vec::Vec;
 use core::cmp::{max, min};
+use std::prelude::v1::String;
 
 use crate::{
     bolts::{rands::Rand, tuples::Named},
     corpus::Corpus,
     inputs::{GeneralizedInputMetadata, GeneralizedItem},
-    mutators::{token_mutations::Tokens, MutationResult, Mutator},
+    mutators::{token_mutations::Tokens, MutationResult, Mutator, MutatorID},
     random_corpus_id,
     state::{HasCorpus, HasMetadata, HasRand},
     Error,
@@ -111,6 +112,11 @@ impl<S> Mutator<GeneralizedInputMetadata, S> for GrimoireExtensionMutator
 where
     S: HasMetadata + HasRand + HasCorpus,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("GrimoireExtensionMutator")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -152,6 +158,14 @@ impl<S> Mutator<GeneralizedInputMetadata, S> for GrimoireRecursiveReplacementMut
 where
     S: HasMetadata + HasRand + HasCorpus,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (
+            MutatorID(String::from("GrimoireRecursiveReplacementMutator")),
+            false,
+        );
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -225,6 +239,14 @@ impl<S> Mutator<GeneralizedInputMetadata, S> for GrimoireStringReplacementMutato
 where
     S: HasMetadata + HasRand + HasCorpus,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (
+            MutatorID(String::from("GrimoireStringReplacementMutator")),
+            false,
+        );
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -336,6 +358,11 @@ impl<S> Mutator<GeneralizedInputMetadata, S> for GrimoireRandomDeleteMutator
 where
     S: HasMetadata + HasRand + HasCorpus,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("GrimoireRandomDeleteMutator")), true);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,

@@ -7,6 +7,7 @@ use core::{
     fmt::{self, Debug},
     marker::PhantomData,
 };
+use std::prelude::v1::String;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,8 @@ use crate::{
     bolts::{calculate_cumulative_sum_in_place, rands::Rand},
     impl_serdeany,
     mutators::{
-        ComposedByMutations, MutationId, MutationResult, Mutator, MutatorsTuple, ScheduledMutator,
+        ComposedByMutations, MutationId, MutationResult, Mutator, MutatorID, MutatorsTuple,
+        ScheduledMutator,
     },
     state::{HasMetadata, HasRand},
     Error,
@@ -105,6 +107,11 @@ where
     MT: MutatorsTuple<I, S>,
     S: HasRand + HasMetadata,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("TuneableScheduledMutator")), false);
+    }
+
     #[inline]
     fn mutate(
         &mut self,

@@ -340,9 +340,15 @@ impl fmt::Display for Error {
     }
 }
 
-/// Stringify the postcard serializer error
-impl From<postcard::Error> for Error {
-    fn from(err: postcard::Error) -> Self {
+/// Stringify the MessageProtocol serializer error
+impl From<rmp_serde::encode::Error> for Error {
+    fn from(err: rmp_serde::encode::Error) -> Self {
+        Self::serialize(format!("{err:?}"))
+    }
+}
+
+impl From<rmp_serde::decode::Error> for Error {
+    fn from(err: rmp_serde::decode::Error) -> Self {
         Self::serialize(format!("{err:?}"))
     }
 }
@@ -521,18 +527,18 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Error in iter {i}"));
         }
 
-        let state_serialized = postcard::to_allocvec(&state).unwrap();
+        let state_serialized = rmp_serde::to_vec(&state).unwrap();
         let state_deserialized: StdState<
             _,
             InMemoryCorpus<BytesInput>,
             StdRand,
             InMemoryCorpus<BytesInput>,
-        > = postcard::from_bytes(state_serialized.as_slice()).unwrap();
+        > = rmp_serde::from_slice(state_serialized.as_slice()).unwrap();
         assert_eq!(state.corpus().count(), state_deserialized.corpus().count());
 
-        let corpus_serialized = postcard::to_allocvec(state.corpus()).unwrap();
+        let corpus_serialized = rmp_serde::to_vec(state.corpus()).unwrap();
         let corpus_deserialized: InMemoryCorpus<BytesInput> =
-            postcard::from_bytes(corpus_serialized.as_slice()).unwrap();
+            rmp_serde::from_slice(corpus_serialized.as_slice()).unwrap();
         assert_eq!(state.corpus().count(), corpus_deserialized.count());
     }
 }

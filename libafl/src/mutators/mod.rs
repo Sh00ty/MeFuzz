@@ -2,6 +2,7 @@
 
 pub mod scheduled;
 use core::fmt;
+use std::prelude::v1::String;
 
 pub use scheduled::*;
 pub mod mutations;
@@ -76,9 +77,14 @@ pub enum MutationResult {
     Skipped,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutatorID(pub String);
+
 /// A mutator takes input, and mutates it.
 /// Simple as that.
 pub trait Mutator<I, S> {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool);
     /// Mutate a given input
     fn mutate(
         &mut self,
@@ -242,6 +248,7 @@ pub mod pybind {
     use pyo3::prelude::*;
 
     use super::{MutationResult, Mutator};
+    use crate::mutators::MutatorID;
     use crate::{
         corpus::CorpusId,
         inputs::{BytesInput, HasBytesVec},
@@ -249,6 +256,7 @@ pub mod pybind {
         state::pybind::{PythonStdState, PythonStdStateWrapper},
         Error,
     };
+    use std::prelude::v1::String;
 
     #[derive(Clone, Debug)]
     pub struct PyObjectMutator {
@@ -263,6 +271,11 @@ pub mod pybind {
     }
 
     impl Mutator<BytesInput, PythonStdState> for PyObjectMutator {
+        /// Returns MutatorID and IsHavoc
+        fn get_id() -> (MutatorID, bool) {
+            return (MutatorID(String::from("PyObjectMutator")), false);
+        }
+
         fn mutate(
             &mut self,
             state: &mut PythonStdState,
@@ -362,6 +375,10 @@ pub mod pybind {
     }
 
     impl Mutator<BytesInput, PythonStdState> for PythonMutator {
+        fn get_id() -> (MutatorID, bool) {
+            return (MutatorID(String::from("PythonMutator")), false);
+        }
+
         fn mutate(
             &mut self,
             state: &mut PythonStdState,

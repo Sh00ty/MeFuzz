@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 libafl = { version = "0.9", path = "../../libafl", features = ["introspection"] }
-libafl_tinyinst = { version = "0.9", path = "../../libafl_tinyinst" }
+libafl_tinyinst = { version = "0.9", path = "../libafl_tinyinst" }
 
 [profile.release]
 codegen-units = 1

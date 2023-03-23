@@ -59,7 +59,7 @@ pub trait Input: Clone + Serialize + serde::de::DeserializeOwned + Debug {
     where
         P: AsRef<Path>,
     {
-        write_file_atomic(path, &postcard::to_allocvec(self)?)
+        write_file_atomic(path, &rmp_serde::to_vec(self)?)
     }
 
     /// Load the content of this input from a file
@@ -70,7 +70,7 @@ pub trait Input: Clone + Serialize + serde::de::DeserializeOwned + Debug {
         let mut file = File::open(path)?;
         let mut bytes: Vec<u8> = vec![];
         file.read_to_end(&mut bytes)?;
-        Ok(postcard::from_bytes(&bytes)?)
+        Ok(rmp_serde::from_slice(&bytes)?)
     }
 
     /// Generate a name for this input

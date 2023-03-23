@@ -8,6 +8,7 @@ use core::{
     ops::{Add, AddAssign},
     slice::Iter,
 };
+use std::prelude::v1::String;
 #[cfg(feature = "std")]
 use std::{
     fs::File,
@@ -23,7 +24,9 @@ use crate::mutators::str_decode;
 use crate::{
     bolts::{rands::Rand, AsSlice},
     inputs::{HasBytesVec, UsesInput},
-    mutators::{buffer_self_copy, mutations::buffer_copy, MutationResult, Mutator, Named},
+    mutators::{
+        buffer_self_copy, mutations::buffer_copy, MutationResult, Mutator, MutatorID, Named,
+    },
     observers::cmp::{CmpValues, CmpValuesMetadata},
     state::{HasMaxSize, HasMetadata, HasRand},
     Error,
@@ -295,6 +298,11 @@ where
     S: HasMetadata + HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("TokenInsert")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -361,6 +369,11 @@ where
     S: UsesInput + HasMetadata + HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("TokenReplace")), false);
+    }
+
     fn mutate(
         &mut self,
         state: &mut S,
@@ -423,6 +436,11 @@ where
     S: UsesInput + HasMetadata + HasRand + HasMaxSize,
     I: HasBytesVec,
 {
+    /// Returns MutatorID and IsHavoc
+    fn get_id() -> (MutatorID, bool) {
+        return (MutatorID(String::from("I2SRandReplace")), false);
+    }
+
     #[allow(clippy::too_many_lines)]
     fn mutate(
         &mut self,

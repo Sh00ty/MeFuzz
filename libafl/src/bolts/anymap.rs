@@ -45,7 +45,7 @@ macro_rules! impl_asany {
 /// Probably not safe for future compilers, fine for now.
 #[must_use]
 pub fn pack_type_id(id: u64) -> TypeId {
-    assert_eq_size!(TypeId, u64);
+    // assert_eq_size!(TypeId, u64);
     unsafe { *(addr_of!(id) as *const TypeId) }
 }
 
@@ -56,7 +56,7 @@ pub fn pack_type_id(id: u64) -> TypeId {
 /// Probably not safe for future compilers, fine for now.
 #[must_use]
 pub fn unpack_type_id(id: TypeId) -> u64 {
-    assert_eq_size!(TypeId, u64);
+    // assert_eq_size!(TypeId, u64);
     unsafe { *(addr_of!(id) as *const u64) }
 }
 

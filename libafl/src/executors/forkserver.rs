@@ -24,21 +24,13 @@ use nix::{
     unistd::Pid,
 };
 
-use crate::{
-    bolts::{
-        fs::{get_unique_std_input_file, InputFile},
-        os::{dup2, pipes::Pipe},
-        shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-        tuples::Prepend,
-        AsMutSlice, AsSlice,
-    },
-    executors::{Executor, ExitKind, HasObservers},
-    inputs::{HasTargetBytes, Input, UsesInput},
-    mutators::Tokens,
-    observers::{MapObserver, Observer, ObserversTuple, UsesObservers},
-    state::UsesState,
-    Error,
-};
+use crate::{bolts::{
+    fs::{get_unique_std_input_file, InputFile},
+    os::{dup2, pipes::Pipe},
+    shmem::{ShMem, ShMemProvider, UnixShMemProvider},
+    tuples::Prepend,
+    AsMutSlice, AsSlice,
+}, executors::{Executor, ExitKind, HasObservers}, inputs::{HasTargetBytes, Input, UsesInput}, mutators::Tokens, observers::{MapObserver, Observer, ObserversTuple, UsesObservers}, state::UsesState, Error, inputs};
 
 #[cfg(feature = "regex")]
 use crate::observers::{get_asan_runtime_flags_with_log_path, AsanBacktraceObserver};
@@ -398,7 +390,7 @@ pub struct TimeoutForkserverExecutor<E> {
     signal: Signal,
 }
 
-impl<E> TimeoutForkserverExecutor<E> {
+impl<E: HasForkserver> TimeoutForkserverExecutor<E> {
     /// Create a new [`TimeoutForkserverExecutor`]
     pub fn new(executor: E, exec_tmout: Duration) -> Result<Self, Error> {
         let signal = Signal::SIGKILL;
@@ -414,6 +406,88 @@ impl<E> TimeoutForkserverExecutor<E> {
             timeout,
             signal,
         })
+    }
+
+    #[inline]
+    pub fn run_target_once(&mut self, input: &inputs::BytesInput) -> Result<ExitKind, Error>
+    where
+    {
+        let mut exit_kind = ExitKind::Ok;
+
+        let last_run_timed_out = self.executor.forkserver().last_run_timed_out();
+
+        if self.executor.uses_shmem_testcase() {
+            let shmem = unsafe { self.executor.shmem_mut().as_mut().unwrap_unchecked() };
+            let target_bytes = input.target_bytes();
+            let size = target_bytes.as_slice().len();
+            let size_in_bytes = size.to_ne_bytes();
+            // The first four bytes tells the size of the shmem.
+            shmem.as_mut_slice()[..4].copy_from_slice(&size_in_bytes[..4]);
+            shmem.as_mut_slice()[SHMEM_FUZZ_HDR_SIZE..(SHMEM_FUZZ_HDR_SIZE + size)]
+                .copy_from_slice(target_bytes.as_slice());
+        } else {
+            self.executor
+                .input_file_mut()
+                .write_buf(input.target_bytes().as_slice())?;
+        }
+
+        let send_len = self
+            .executor
+            .forkserver_mut()
+            .write_ctl(last_run_timed_out)?;
+
+        self.executor.forkserver_mut().set_last_run_timed_out(0);
+
+        if send_len != 4 {
+            return Err(Error::unknown(
+                "Unable to request new process from fork server (OOM?)".to_string(),
+            ));
+        }
+
+        let (recv_pid_len, pid) = self.executor.forkserver_mut().read_st()?;
+        if recv_pid_len != 4 {
+            return Err(Error::unknown(
+                "Unable to request new process from fork server (OOM?)".to_string(),
+            ));
+        }
+
+        if pid <= 0 {
+            return Err(Error::unknown(
+                "Fork server is misbehaving (OOM?)".to_string(),
+            ));
+        }
+
+        self.executor
+            .forkserver_mut()
+            .set_child_pid(Pid::from_raw(pid));
+
+        if let Some(status) = self
+            .executor
+            .forkserver_mut()
+            .read_st_timed(&self.timeout)?
+        {
+            self.executor.forkserver_mut().set_status(status);
+            if libc::WIFSIGNALED(self.executor.forkserver().status()) {
+                exit_kind = ExitKind::Crash;
+            }
+        } else {
+            self.executor.forkserver_mut().set_last_run_timed_out(1);
+
+            // We need to kill the child in case he has timed out, or we can't get the correct pid in the next call to self.executor.forkserver_mut().read_st()?
+            let _: Result<(), nix::errno::Errno> =
+                kill(self.executor.forkserver().child_pid(), self.signal);
+            let (recv_status_len, _) = self.executor.forkserver_mut().read_st()?;
+            if recv_status_len != 4 {
+                return Err(Error::unknown("Could not kill timed-out child".to_string()));
+            }
+            exit_kind = ExitKind::Timeout;
+        }
+
+        self.executor
+            .forkserver_mut()
+            .set_child_pid(Pid::from_raw(0));
+
+        Ok(exit_kind)
     }
 }
 

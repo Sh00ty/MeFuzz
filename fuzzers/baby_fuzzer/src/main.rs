@@ -138,22 +138,8 @@ pub fn main() {
         std::time::Duration::from_secs(10),
         );
 
-        // Generator of printable bytearrays of max size 32
-        let mut generator = RandPrintablesGenerator::new(32);
-
-        // Generate 8 initial inputs
-        state
-            .generate_initial_inputs(&mut fuzzer, &mut executor, &mut generator, &mut mgr, 8)
-            .expect("Failed to generate the initial corpus");
-
-        // Setup a mutational stage with a basic bytes mutator
-        let mutator = StdScheduledMutator::new(havoc_mutations());
-        let mut stages = tuple_list!(StdMutationalStage::new(mutator));
-
-        fuzzer
-        .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
-        .expect("Error in the fuzzing loop");
-        Ok(())
+        let result = fuzzer.execute_input(&mut state,&mut executor, &mut mrg, &BytesInput::new(vec![1, 2, 3, 4, 5]));
+        dbg!(result.unwrap());
     };
 
     match Launcher::builder()

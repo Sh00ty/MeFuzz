@@ -12,24 +12,17 @@ import (
 )
 
 type seed struct {
+	ID        uint64
 	Crash     bool
 	NewCov    uint
-	InputHash uint64
 	CreatedAt time.Time
 	FuzzerID  entities.FuzzerID
-}
-
-func fromTestcase(tc entities.Testcase) seed {
-	return seed{
-		CreatedAt: tc.CreatedAt,
-		InputHash: tc.InputHash,
-	}
 }
 
 func seedCmp(ai interface{}, bi interface{}) int {
 	a := ai.(seed)
 	b := bi.(seed)
-	if a.InputHash == b.InputHash {
+	if a.ID == b.ID {
 		return 0
 	}
 	if a.Crash || b.Crash == true {
@@ -59,7 +52,7 @@ func NewSeedPool(corpusDirName string, initialSeeds []entities.Testcase, evalDat
 		return nil, errors.Errorf("please remove previous %s dir or give me permission on it", corpusDirName)
 	}
 	if err := os.Mkdir(corpusDirName, os.ModePerm); err != nil {
-		return nil, errors.Wrapf(err, "failed to create corpus dir=%s", corpusDirName)
+		return nil, errors.Wrapf(err, "failed to create corpus %s", corpusDirName)
 	}
 	sp := &seedPool{
 		corpusDir: corpusDirName,
@@ -68,16 +61,16 @@ func NewSeedPool(corpusDirName string, initialSeeds []entities.Testcase, evalDat
 	}
 
 	for i, initialSeed := range initialSeeds {
-		if err := sp.AddSeed(entities.MasterFuzzerID, initialSeed, evalDataList[i]); err != nil {
-			logger.Errorf(err, "failed to add initial seed=%d", initialSeed.InputHash)
+		if err := sp.AddSeed(initialSeed, evalDataList[i]); err != nil {
+			logger.Errorf(err, "failed to add initial seed %d", initialSeed.ID)
 		}
 	}
 	return sp, nil
 }
 
-func (sp *seedPool) AddSeed(fuzzerID entities.FuzzerID, tc entities.Testcase, evalData entities.EvaluatingData) error {
+func (sp *seedPool) AddSeed(tc entities.Testcase, evalData entities.EvaluatingData) error {
 	if err := os.WriteFile(
-		path.Join(sp.corpusDir, strconv.FormatUint(tc.InputHash, 10)),
+		path.Join(sp.corpusDir, strconv.FormatUint(tc.ID, 10)),
 		tc.InputData,
 		os.ModePerm,
 	); err != nil {
@@ -86,10 +79,10 @@ func (sp *seedPool) AddSeed(fuzzerID entities.FuzzerID, tc entities.Testcase, ev
 	// тк входные данные уже на диске то нет необходимости в них в оперативной памяти
 	tc.InputData = nil
 	sp.seeds.Put(seed{
+		ID:        tc.ID,
 		Crash:     evalData.HasCrash,
 		NewCov:    evalData.NewCov,
 		CreatedAt: tc.CreatedAt,
-		InputHash: tc.InputHash,
 	}, tc)
 	return nil
 }
@@ -100,7 +93,7 @@ func (sp *seedPool) GetMostInterestingIDs(count uint) (res []entities.Testcase) 
 	for i := uint(0); i < count; i++ {
 		if moved := it.Prev(); moved {
 			tc := it.Value().(entities.Testcase)
-			input, err := os.ReadFile(path.Join(sp.corpusDir, strconv.FormatUint(tc.InputHash, 10)))
+			input, err := os.ReadFile(path.Join(sp.corpusDir, strconv.FormatUint(tc.ID, 10)))
 			if err != nil {
 				logger.Errorf(err, "failed to get testcase=%v", tc)
 				continue
@@ -113,17 +106,25 @@ func (sp *seedPool) GetMostInterestingIDs(count uint) (res []entities.Testcase) 
 }
 
 func (sp *seedPool) GetByID(id uint64) (res entities.Testcase, err error) {
-	val, found := sp.seeds.Get(seed{
-		InputHash: id,
-	})
+	it := sp.seeds.Iterator()
+	it.Begin()
+
+	found := false
+	for it.Next() {
+		tc := it.Value().(entities.Testcase)
+		if tc.ID == id {
+			res = tc
+			found = true
+		}
+	}
 	if !found {
-		return entities.Testcase{}, errors.Errorf("not found testcase with id=%d", id)
+		return entities.Testcase{}, errors.Errorf("not found seed %d", id)
 	}
-	tc := val.(entities.Testcase)
-	input, err := os.ReadFile(path.Join(sp.corpusDir, strconv.FormatUint(tc.InputHash, 10)))
+
+	input, err := os.ReadFile(path.Join(sp.corpusDir, strconv.FormatUint(res.ID, 10)))
 	if err != nil {
-		return entities.Testcase{}, errors.Errorf("failed to get testcase input=%v; err=%v", tc, err)
+		return entities.Testcase{}, errors.Errorf("failed to get testcase input=%v; err=%v", res, err)
 	}
-	tc.InputData = input
-	return tc, nil
+	res.InputData = input
+	return res, nil
 }

@@ -19,10 +19,10 @@ const (
 type CovData struct {
 	mu sync.RWMutex
 	// храним фаззера вместе с конфигурациями
-	// сделано для того чтобы сомтрет статистику именно по конфигурациям
+	// сделано для того чтобы смотреть статистику именно по конфигурациям
 	// но одинаковые конфигурации на разных машинах пока что разные тут фаззеры
 	// тк они в теории могут давать достаточно разносторонее покрытие
-	Fuzzers map[fuzzConfKey]Fuzzer
+	Fuzzers map[fuzzConfKey]*Fuzzer
 	// необходимо быстро находить ближайшего по расстоянию покрытия соседа
 	// дерево позволяющее делать быстрые запросы на ближайших соседей
 	Vptree *vptree.Tree
@@ -39,7 +39,7 @@ type fuzzConfKey struct {
 
 func NewCovData() *CovData {
 	return &CovData{
-		Fuzzers:    make(map[fuzzConfKey]Fuzzer, 0),
+		Fuzzers:    make(map[fuzzConfKey]*Fuzzer, 0),
 		LastUpdate: time.Now(),
 	}
 }
@@ -49,22 +49,29 @@ func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
 	d.Fuzzers[fuzzConfKey{
 		FuzzerID: fuzzer.ID,
 		Config:   fuzzer.Configuration,
-	}] = Fuzzer{
+	}] = &Fuzzer{
 		Cov:           [entities.CovSize]float64{},
 		TestcaseCount: [entities.CovSize]uint{},
+		mu:            &sync.Mutex{},
 	}
 	d.mu.Unlock()
 }
 
 func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) {
-	d.mu.Lock()
 	key := fuzzConfKey{
 		FuzzerID: fuzzerID,
 		Config:   conf,
 	}
-	d.Fuzzers[key] = Fuzzer{
+
+	d.mu.Lock()
+	if _, exists := d.Fuzzers[key]; exists {
+		d.mu.Unlock()
+		return
+	}
+	d.Fuzzers[key] = &Fuzzer{
 		Cov:           [entities.CovSize]float64{},
 		TestcaseCount: [entities.CovSize]uint{},
+		mu:            &sync.Mutex{},
 	}
 	d.mu.Unlock()
 }
@@ -74,28 +81,33 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 		FuzzerID: fuzzerID,
 		Config:   config,
 	}
+
 	d.mu.Lock()
 	fuzzer, exists := d.Fuzzers[key]
+	d.mu.Unlock()
+
 	if !exists {
 		logger.ErrorMessage("not found fuzzer with id=%v and conf=%v", fuzzerID, config)
-		d.mu.Unlock()
 		return
 	}
+
+	fuzzer.mu.Lock()
 	for j, tr := range cov {
 		if tr != 0 {
 			fuzzer.TestcaseCount[j]++
-			fuzzer.Cov[j] += float64(tr) / float64(fuzzer.TestcaseCount[j])
+			fuzzer.Cov[j] += float64(tr)
 		}
 	}
-	d.Fuzzers[key] = fuzzer
-	d.mu.Unlock()
-	logger.Debugf("added coverage for fuzzerID=%v; conf=%v", fuzzerID, config)
+	fuzzer.mu.Unlock()
+
+	logger.Debugf("added coverage for fuzzerID %v and conf %v", fuzzerID, config)
 }
 
 type Fuzzer struct {
+	mu *sync.Mutex
 	// оригинальное покрытие за весь процесс фаззинга
 	Cov [entities.CovSize]float64
-	// кол-во тест-кейсов фаззера на каждый элемент покрытия
+	// кол-во тест-кейсов фаззера на каждый элемент бранч
 	// для того чтобы уровнять дистанию от много создающих фаззеров
 	// так же для того чтобы редкое покрытие вносило больший импакт
 	TestcaseCount [entities.CovSize]uint
@@ -104,6 +116,9 @@ type Fuzzer struct {
 	// поэтому стоит отсекать такие моменты с помощью расстояние от начала координат
 	// ну и в целом оно дает представление о том что фаззер стоит на месте и никуда не двигается
 	SqNorm float64
+	// Хранит значения SqNorm которое было в прошлой итерации, таким образом можно оценивать
+	// на сколько все это дело сдвинулось
+	PrevSqNorm float64
 	// вспомогательная структура для хранения фаззера в дереве
 	// внутри нее покрытие не за все время, а за переод до ее создания
 	vpFuzzer *vpfuzzer
@@ -117,8 +132,10 @@ type vpfuzzer struct {
 
 // Distance считает расстояние до c
 func (p *vpfuzzer) Distance(c vptree.Comparable) float64 {
-	q := c.(*vpfuzzer)
-	var dist float64
+	var (
+		q    = c.(*vpfuzzer)
+		dist float64
+	)
 	for k, p := range p.Coverage {
 		diff := p - q.Coverage[k]
 		dist += diff * diff
@@ -133,8 +150,11 @@ func (d *CovData) UpdateDistances() (err error) {
 	// приводим покрытие в правильный формат, тк исходный формат не совсем валидный для анализа
 	vpFuzzers := make([]vptree.Comparable, 0, len(d.Fuzzers))
 	for key, fuzzer := range d.Fuzzers {
-		cov := [entities.CovSize]float64{}
-		sqNorm := float64(0)
+		var (
+			cov    = [entities.CovSize]float64{}
+			sqNorm = float64(0)
+		)
+		fuzzer.mu.Lock()
 		for i := 0; i < entities.CovSize; i++ {
 			cov[i] = fuzzer.Cov[i] / math.Max(float64(fuzzer.TestcaseCount[i]), 1)
 			sqNorm += cov[i] * cov[i]
@@ -143,10 +163,14 @@ func (d *CovData) UpdateDistances() (err error) {
 			Key:      key,
 			Coverage: cov,
 		}
-		vpFuzzers = append(vpFuzzers, &vf)
+
 		fuzzer.vpFuzzer = &vf
+		fuzzer.PrevSqNorm = fuzzer.SqNorm
 		fuzzer.SqNorm = sqNorm
+		fuzzer.mu.Unlock()
+
 		d.Fuzzers[key] = fuzzer
+		vpFuzzers = append(vpFuzzers, &vf)
 	}
 	d.Vptree, err = vptree.New(vpFuzzers, 3, nil)
 	if err != nil {
@@ -162,12 +186,12 @@ func (d *CovData) UpdateDistances() (err error) {
 func (d *CovData) GetNearestDistances() {
 	for key, fuzzer := range d.Fuzzers {
 		logger.Debugf("Norm for %v = %f", key.FuzzerID, math.Sqrt(fuzzer.SqNorm))
+
 		keeper := vptree.NewNKeeper(nearestDataNeeded + 1)
 		d.Vptree.NearestSet(keeper, fuzzer.vpFuzzer)
 		for i, res := range keeper.Heap {
 			r := res.Comparable.(*vpfuzzer)
 			logger.Debugf("the closest [%d] for %v is %v; dist=%f", i, key.FuzzerID, r.Key.FuzzerID, res.Dist)
 		}
-
 	}
 }

@@ -112,3 +112,8 @@ type updateExecsStats struct {
 	Executions uint64        `msgpack:"executions"`
 	Phantom    interface{}   `msgpack:"phantom"`
 }
+
+type infraMessageHello struct {
+	Kind int32 `msgpack:"kind"`
+	// todo: fuzzer registrations or empty for evalera
+}

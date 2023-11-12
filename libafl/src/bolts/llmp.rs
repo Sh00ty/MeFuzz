@@ -2210,6 +2210,7 @@ where
             .unwrap_or_else(|_| "<unknown>".into())
             .to_string_lossy()
             .into();
+
         send_tcp_msg(&mut stream, &TcpRequest::RemoteBrokerHello { hostname })?;
 
         match recv_tcp_msg(&mut stream)?.try_into()? {
@@ -2250,10 +2251,10 @@ where
                 .shmem_from_description(map_description)?,
         );
 
-        {
-            self.has_master = true;
-            self.register_client(new_shmem);
-        }
+
+        self.has_master = true;
+        self.register_client(new_shmem);
+
         Ok(())
     }
 

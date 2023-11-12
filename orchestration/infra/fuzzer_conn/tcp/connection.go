@@ -1,13 +1,14 @@
 package tcp
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"github.com/pkg/errors"
 	"io"
-	"log"
 	"math"
 	"net"
+	"orchestration/core/performance"
 	"orchestration/entities"
 	"orchestration/infra/utils/compression"
 	"orchestration/infra/utils/hashing"
@@ -21,7 +22,8 @@ import (
 const (
 	protocol            = "tcp"
 	expectedNodesNumber = 100
-	masterClientID      = math.MaxInt16
+	// нереалистичный id для мастера, чтобы он не пересекался с клиентами
+	masterClientID = math.MaxInt16
 )
 
 var (
@@ -32,6 +34,7 @@ type connection struct {
 	conn     net.Conn
 	nodeID   entities.NodeID
 	nodeType entities.NodeType
+	sendChan chan<- entities.FuzzerMessage
 }
 
 func (conn *connection) RecvMessage() ([]byte, error) {
@@ -41,7 +44,7 @@ func (conn *connection) RecvMessage() ([]byte, error) {
 		return nil, err
 	}
 	msgLen := binary.BigEndian.Uint32(msgLenBytes)
-	logger.Debugf("received %d bytes", msgLen)
+	logger.Debugf("received %d bytes from %v", msgLen, conn.nodeID)
 	msg := make([]byte, msgLen)
 	_, err = conn.conn.Read(msg)
 	return msg, err
@@ -52,7 +55,7 @@ func (conn *connection) SendMessage(msg []byte) error {
 		return err
 	}
 	n, err := conn.conn.Write(msg)
-	logger.Debugf("sent %d bytes", n)
+	logger.Debugf("sent %d bytes to %v", n, conn.nodeID)
 	return err
 }
 
@@ -61,8 +64,9 @@ func (conn *connection) String() string {
 }
 
 func (conn *connection) Close() {
+	close(conn.sendChan)
 	if err := conn.conn.Close(); err != nil {
-		log.Printf("failed to close connection: %v", conn)
+		logger.ErrorMessage("failed to close connection: %s", conn)
 	}
 }
 
@@ -73,16 +77,23 @@ type listener struct {
 }
 
 type tcpClient struct {
-	listener             listener
-	connMap              map[entities.NodeID]connection
-	sendChanMap          map[entities.NodeID]chan<- entities.FuzzerMessage
-	recvMsgChan          chan entities.FuzzerMessage
-	sendLimit            uint32
-	recvLimit            uint32
-	ioTimeout            time.Duration
-	tcpDialTimeout       time.Duration
-	mu                   sync.RWMutex
-	closedConnectionChan chan entities.NodeID
+	// прослушивает все tcp соединения по порту
+	listener listener
+	// храним для каждой ноды соединение с ней
+	connMap map[entities.NodeID]connection
+	// в этот канал присылаются все сообщений со всех нод
+	recvMsgChan chan entities.FuzzerMessage
+	// размер буфера для отправки сообщений
+	// если достич его, то мастер начинает стоять в блокировке
+	// тк не успевает ничего обработать
+	sendLimit      uint32
+	recvLimit      uint32
+	ioTimeout      time.Duration
+	tcpDialTimeout time.Duration
+	mu             sync.RWMutex
+
+	// контролируем обрывы соединений и удаление лишних нод
+	performanceEventChan chan performance.NodeEvent
 }
 
 func NewTcpClient(
@@ -90,6 +101,7 @@ func NewTcpClient(
 	recvLimit uint32,
 	ioTimeout time.Duration,
 	tcpDialTimeout time.Duration,
+	performanceEventChan chan performance.NodeEvent,
 ) *tcpClient {
 	return &tcpClient{
 		listener:             listener{},
@@ -98,22 +110,72 @@ func NewTcpClient(
 		ioTimeout:            ioTimeout,
 		tcpDialTimeout:       tcpDialTimeout,
 		sendLimit:            sendLimit,
-		sendChanMap:          make(map[entities.NodeID]chan<- entities.FuzzerMessage, 0),
-		connMap:              make(map[entities.NodeID]connection, 0),
-		closedConnectionChan: make(chan entities.NodeID, expectedNodesNumber),
+		connMap:              make(map[entities.NodeID]connection, expectedNodesNumber),
+		performanceEventChan: performanceEventChan,
 	}
 }
 
 func (srv *tcpClient) clearConnection(conn connection) {
 	srv.mu.Lock()
-	delete(srv.sendChanMap, conn.nodeID)
 	delete(srv.connMap, conn.nodeID)
 	srv.mu.Unlock()
+
 	conn.Close()
-	srv.closedConnectionChan <- conn.nodeID
+
+	performanceEventType := performance.Unknown
+	switch conn.nodeType {
+	case entities.Evaler:
+		performanceEventType = performance.EvalNodeDeleted
+	case entities.Broker:
+		performanceEventType = performance.FuzzerNodeDeleted
+	}
+	srv.performanceEventChan <- performance.NodeEvent{
+		Type:   performanceEventType,
+		NodeID: conn.nodeID,
+	}
 }
 
-func (*tcpClient) WaitForIncomingConnections() {}
+func (srv *tcpClient) WaitForIncomingConnections(ctx context.Context) {
+	go func() {
+		converter := msgpack.New()
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			tcpConn, err := srv.listener.tcpListener.Accept()
+			if err != nil {
+				logger.Errorf(err, "failed to eastablish connection")
+				continue
+			}
+			nodeID := entities.NodeID(10)
+
+			conn := connection{
+				conn:   tcpConn,
+				nodeID: nodeID,
+			}
+			hostname, err := os.Hostname()
+			if err != nil {
+				logger.Errorf(err, "failed to get hostname")
+				continue
+			}
+			msg := masterNodeHello{
+				MasterHostname: hostname,
+				BrokerID:       uint32(nodeID),
+				RecvLimit:      srv.sendLimit,
+				SendLimit:      srv.recvLimit,
+			}
+			masterNodeHelloBytes, err := converter.Marshal(msg)
+			if err != nil {
+				logger.Errorf(err, "failed to marshal master node hello message")
+				continue
+			}
+			if err = conn.SendMessage(masterNodeHelloBytes); err != nil {
+				logger.Errorf(err, "failed to send master node hello message")
+			}
+
+		}
+	}()
+}
 
 func (srv *tcpClient) Connect(nodeType entities.NodeType, nodeID entities.NodeID, addr string, port uint16) error {
 	conn, err := net.DialTimeout(protocol, fmt.Sprintf("%s:%d", addr, port), srv.tcpDialTimeout)
@@ -145,7 +207,8 @@ func (srv *tcpClient) brokerHello(brokerConn connection) error {
 	defer srv.mu.Unlock()
 
 	if _, exists := srv.connMap[brokerConn.nodeID]; exists {
-		return errors.Errorf("connection %v already exists", brokerConn)
+		logger.ErrorMessage("connection %v already exists", brokerConn)
+		return nil
 	}
 
 	// получаем приветсвие от брокера (он всем его отправляет)
@@ -163,7 +226,7 @@ func (srv *tcpClient) brokerHello(brokerConn connection) error {
 
 	masterHost, err := os.Hostname()
 	if err != nil {
-		log.Printf("error while getting master hostname, pasted 'externalhost' insted")
+		logger.Infof("error while getting master hostname, pasted 'externalhost' insted")
 		masterHost = "external_host"
 	}
 
@@ -203,11 +266,17 @@ func (srv *tcpClient) brokerHello(brokerConn connection) error {
 		return errors.Errorf("got trash message: [ma.BrokerID != srv.conns] (%d!=%d)", ma.BrokerID, brokerConn.nodeID)
 	}
 	srv.recvFuzzerConfigurations(brokerConn.nodeID, ma.FuzzerConfigurations)
+
 	// все готово к работе, добавляем это соединение и идем дальше
 	sendChan := make(chan entities.FuzzerMessage, srv.sendLimit)
 	srv.sendChanMap[brokerConn.nodeID] = sendChan
 	srv.connMap[brokerConn.nodeID] = brokerConn
 	go srv.handleBrokerConnection(brokerConn, sendChan)
+
+	srv.performanceEventChan <- performance.NodeEvent{
+		Type:   performance.NewFuzzerNode,
+		NodeID: brokerConn.nodeID,
+	}
 	return nil
 }
 
@@ -237,6 +306,7 @@ func (srv *tcpClient) handleBrokerConnection(conn connection, sendChan <-chan en
 				logger.Infof("received message without M2B flag; msg=%v", msg)
 				continue
 			}
+
 			payload := msgpack.CovertTo[int, byte](msg.Payload)
 
 			if flag.Has(entities.Compressed) {
@@ -246,11 +316,13 @@ func (srv *tcpClient) handleBrokerConnection(conn connection, sendChan <-chan en
 					continue
 				}
 			}
+
 			fuzzerMsg := entities.FuzzerMessage{
 				From: entities.FuzzerID{
 					NodeID:   conn.nodeID,
 					ClientID: entities.ClientID(msg.ClientID),
 				}}
+
 			switch {
 			case flag.Has(entities.NewTestCase):
 				tcTmp := newTestcase{}
@@ -260,22 +332,26 @@ func (srv *tcpClient) handleBrokerConnection(conn connection, sendChan <-chan en
 				}
 				inputData := msgpack.CovertTo[int, byte](tcTmp.Input.Input)
 				fuzzerMsg.Info = entities.Testcase{
+					ID:         hashing.MakeHash(inputData),
 					InputData:  inputData,
-					InputHash:  hashing.MakeHash(inputData),
 					Execs:      tcTmp.Executions,
 					CorpusSize: tcTmp.CorpusSize,
 					CreatedAt:  time.Unix(int64(tcTmp.Timestamp.Secs), int64(tcTmp.Timestamp.Nsec)).In(time.Local),
 				}
 			}
-			srv.recvMsgChan <- fuzzerMsg
+			// TODO: graceful shutdown
+			select {
+			case srv.recvMsgChan <- fuzzerMsg:
+			}
+
 		}
 
 		for i := uint32(0); i < srv.sendLimit; i++ {
 			// тк не факт что есть что кинуть =>
 			// сделаем через select чтобы не повиснуть
 			select {
-			case msg, opened := <-sendChan:
-				if !opened {
+			case msg, valid := <-sendChan:
+				if !valid {
 					srv.clearConnection(conn)
 					logger.Infof("connection %v closed by master", conn)
 					return
@@ -290,17 +366,17 @@ func (srv *tcpClient) handleBrokerConnection(conn connection, sendChan <-chan en
 					logger.Errorf(err, "failed to compress msg=%v", msg)
 					continue
 				}
-				flags := uint32(entities.Master)
+				flags := entities.Master
 				if len(compressed) != len(msgBytes) {
-					flags = flags | uint32(entities.Compressed)
+					flags = flags.Add(entities.Compressed)
 				}
-				flags = flags | uint32(msg.Info.Kind())
+				flags = flags.Add(msg.Info.Kind())
 
 				tcpMasterMsgBytes, err := converter.Marshal(
 					tcpMasterMessage{
 						Payload:  msgpack.CovertTo[byte, int](compressed),
 						ClientID: masterClientID,
-						Flags:    flags,
+						Flags:    uint32(flags),
 					})
 				if err != nil {
 					logger.Errorf(err, "failed to marshal tcp master message: msg=%v", msg)
@@ -327,6 +403,7 @@ func (srv *tcpClient) Send(nodeID entities.NodeID, msg entities.FuzzerMessage) e
 	srv.mu.RLock()
 	defer srv.mu.RUnlock()
 
+	// TODO: add ctx or timeoutЙ
 	if sendChan, exists := srv.sendChanMap[nodeID]; exists {
 		select {
 		case sendChan <- msg:

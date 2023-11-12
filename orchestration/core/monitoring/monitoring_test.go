@@ -11,7 +11,7 @@ import (
 
 func TestMonitoringRun(t *testing.T) {
 	recvMsgChan := make(chan entities.FuzzerMessage)
-	evaler := &mocks.Evaler{}
+	evaler := &mocks.Evaluator{}
 	evaler.Test(t)
 	infoDB := &mocks.FuzzInfoDB{}
 	infoDB.Test(t)
@@ -79,14 +79,14 @@ func TestMonitoringRun(t *testing.T) {
 	})
 
 	tc1 := entities.Testcase{
-		InputHash:  10,
+		ID:         10,
 		InputData:  []byte{1, 2, 3, 4, 5},
 		Execs:      9,
 		CorpusSize: 12,
 		CreatedAt:  time.Now(),
 	}
 	tc2 := entities.Testcase{
-		InputHash:  19,
+		ID:         19,
 		InputData:  []byte{1},
 		Execs:      19,
 		CorpusSize: 2,

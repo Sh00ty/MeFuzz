@@ -325,7 +325,7 @@ where
 }
 
 /// An [`EventManager`] that forwards all events to other attached fuzzers on shared maps or via tcp,
-/// using low-level message passing, [`crate::bolts::llmp`].
+/// using low-level message passing, crate::bolts::llmp.
 pub struct LlmpEventManager<S, SP>
 where
     S: UsesInput,

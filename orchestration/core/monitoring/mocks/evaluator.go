@@ -13,25 +13,25 @@ type Evaluator struct {
 	mock.Mock
 }
 
-// Evaluate provides a mock function with given fields: testCases, len
-func (_m *Evaluator) Evaluate(testCases []entities.Testcase, len uint) ([]entities.EvaluatingData, error) {
-	ret := _m.Called(testCases, len)
+// Evaluate provides a mock function with given fields: testCases
+func (_m *Evaluator) Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingData, error) {
+	ret := _m.Called(testCases)
 
 	var r0 []entities.EvaluatingData
 	var r1 error
-	if rf, ok := ret.Get(0).(func([]entities.Testcase, uint) ([]entities.EvaluatingData, error)); ok {
-		return rf(testCases, len)
+	if rf, ok := ret.Get(0).(func([]entities.Testcase) ([]entities.EvaluatingData, error)); ok {
+		return rf(testCases)
 	}
-	if rf, ok := ret.Get(0).(func([]entities.Testcase, uint) []entities.EvaluatingData); ok {
-		r0 = rf(testCases, len)
+	if rf, ok := ret.Get(0).(func([]entities.Testcase) []entities.EvaluatingData); ok {
+		r0 = rf(testCases)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]entities.EvaluatingData)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func([]entities.Testcase, uint) error); ok {
-		r1 = rf(testCases, len)
+	if rf, ok := ret.Get(1).(func([]entities.Testcase) error); ok {
+		r1 = rf(testCases)
 	} else {
 		r1 = ret.Error(1)
 	}

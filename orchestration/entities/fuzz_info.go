@@ -42,6 +42,10 @@ func (f FuzzInfoKind) Has(flag FuzzInfoKind) bool {
 	return flag == f&flag
 }
 
+func (f FuzzInfoKind) Add(flag FuzzInfoKind) FuzzInfoKind {
+	return f | flag
+}
+
 type FuzzerID struct {
 	ClientID ClientID
 	NodeID   NodeID
@@ -65,8 +69,8 @@ type FuzzerInformation interface {
 }
 
 type Testcase struct {
+	ID         uint64
 	InputData  []byte
-	InputHash  uint64
 	Execs      uint32
 	CorpusSize uint32
 	CreatedAt  time.Time

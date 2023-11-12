@@ -10,18 +10,17 @@ import (
 type fuzzInfoDB struct {
 	// сохраняем тест-кейсы для общей картины
 	seedPool *seedPool
-	// информация необходимая для проведения PCA
-	covData *CovData
+	// общее покрытие собранное тест-кейсами пришедшими в мастер
+	generalCoverage [entities.CovSize]bool
+	generalCovMu    *sync.Mutex
 
 	mu *sync.RWMutex
 	// все зарегистрированные фаззеры
 	fuzzerMap map[entities.FuzzerID]entities.Fuzzer
 	// фаззеры плохо проявиших себя в предыдущих раундах
 	toChangeConf map[entities.FuzzerID]struct{}
-
-	generalCovMu *sync.Mutex
-	// общее покрытие собранное тест-кейсами пришедшими в мастер
-	generalCoverage [entities.CovSize]bool
+	// информация необходимая для оценки схожести покрытий
+	covData *CovData
 }
 
 // New - создает базу данных с динамической информацией для фаззеров
@@ -48,6 +47,7 @@ func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.FuzzerID, conf entities.Fuz
 	db.fuzzerMap[fuzzerID] = fuzzer
 	db.covData.ChangeFuzzerConfig(fuzzerID, conf)
 	db.mu.Unlock()
+	logger.Debugf("changed fuzzer %v config to %v", fuzzerID, conf)
 	return nil
 }
 
@@ -67,6 +67,7 @@ func (db *fuzzInfoDB) AddFuzzer(f entities.Fuzzer) error {
 func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities.Testcase, evalDataList []entities.EvaluatingData) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
 	for i := 0; i < len(idList); i++ {
 		fuzzer, exists := db.fuzzerMap[idList[i]]
 		if !exists {
@@ -74,10 +75,15 @@ func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities
 			continue
 		}
 
+		if _, exists := fuzzer.Testcases[tcList[i].ID]; exists {
+			logger.Debugf("test case with hash %s already exists", tcList[i].ID)
+			continue
+		}
+
 		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
 
 		if !evalDataList[i].HasCrash && evalDataList[i].NewCov == 0 {
-			logger.Info("useless testcase")
+			logger.Debug("useless testcase")
 			continue
 		}
 
@@ -85,8 +91,9 @@ func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities
 			fuzzer.BugsFound++
 		}
 
-		fuzzer.Testcases[tcList[i].InputHash] = struct{}{}
-		if err := db.seedPool.AddSeed(fuzzer.ID, tcList[i], evalDataList[i]); err != nil {
+		fuzzer.Testcases[tcList[i].ID] = struct{}{}
+
+		if err := db.seedPool.AddSeed(tcList[i], evalDataList[i]); err != nil {
 			logger.Errorf(err, "failed to add testcase to pool: %v", tcList[i])
 		}
 	}
@@ -104,7 +111,7 @@ func (db *fuzzInfoDB) DeleteFuzzer(id entities.FuzzerID) error {
 	return nil
 }
 
-// NewGeneralCov - добавляет покрытие собранное оценщиком и возвращает true если это глобально новое покрытие
+// NewGeneralCov - добавляет покрытие собранное оценщиком и возвращает кол-во новых бранчей
 func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 	db.generalCovMu.Lock()
 	res := uint(0)

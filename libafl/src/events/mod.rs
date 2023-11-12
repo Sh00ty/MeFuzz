@@ -108,7 +108,7 @@ impl Handler for ShutdownSignalData {
 }
 
 /// A per-fuzzer unique `ID`, usually starting with `0` and increasing
-/// by `1` in multiprocessed `EventManager`s, such as [`self::llmp::LlmpEventManager`].
+/// by `1` in multiprocessed `EventManager`s, such as `self::llmp::LlmpEventManager`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct EventManagerId(
@@ -406,11 +406,11 @@ where
 pub trait EventFirer: UsesState {
     /// Send off an [`Event`] to the broker
     ///
-    /// For multi-processed managers, such as [`llmp::LlmpEventManager`],
-    /// this serializes the [`Event`] and commits it to the [`llmp`] page.
+    /// For multi-processed managers, such as `llmp::LlmpEventManager`,
+    /// this serializes the `Event` and commits it to the `llmp` page.
     /// In this case, if you `fire` faster than the broker can consume
-    /// (for example for each [`Input`], on multiple cores)
-    /// the [`llmp`] shared map may fill up and the client will eventually OOM or [`panic`].
+    /// (for example for each `Input`, on multiple cores)
+    /// the `llmp` shared map may fill up and the client will eventually OOM or `panic`.
     /// This should not happen for a normal use-case.
     fn fire(
         &mut self,
@@ -457,7 +457,7 @@ where
 {
     /// Given the last time, if `monitor_timeout` seconds passed, send off an info/monitor/heartbeat message to the broker.
     /// Returns the new `last` time (so the old one, unless `monitor_timeout` time has passed and monitor have been sent)
-    /// Will return an [`crate::Error`], if the stats could not be sent.
+    /// Will return an `crate::Error`, if the stats could not be sent.
     fn maybe_report_progress(
         &mut self,
         state: &mut Self::State,

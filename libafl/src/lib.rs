@@ -105,6 +105,7 @@ pub mod observers;
 pub mod schedulers;
 pub mod stages;
 pub mod state;
+pub mod orchestration;
 
 pub mod fuzzer;
 use alloc::string::{FromUtf8Error, String};

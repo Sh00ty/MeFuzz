@@ -35,7 +35,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *packet_buffer, size_t packet_length) {
 
   switch (datagram->type) {
 case data_read:
-    if (saved_data != NULL && datagram->offset + datagram->length <= saved_data_length) {
+    if (saved_data != NULL && datagram->offs et + datagram->length <= saved_data_length) {
       write(0, packet_buffer + datagram->offset, datagram->length);
     }
     break;

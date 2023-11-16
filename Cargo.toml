@@ -3,6 +3,8 @@ members = [
     "libafl",
     "fuzzers/libafl_derive",
     "fuzzers/libafl_cc",
+    "fuzzers/forkserver_simple",
+    "fuzzers/libfuzzer_libpng",
     "fuzzers/libafl_targets",
     "fuzzers/libafl_frida",
     "fuzzers/libafl_qemu",
@@ -20,12 +22,13 @@ members = [
 ]
 default-members = [
     "libafl",
+    "fuzzers/forkserver_simple",
+    "fuzzers/libfuzzer_libpng",
     "fuzzers/libafl_derive",
     "fuzzers/libafl_cc",
     "fuzzers/libafl_targets",
 ]
 exclude = [
-    "fuzzers",
     "bindings",
     "scripts",
     "fuzzers/libafl_qemu/libafl_qemu_build",

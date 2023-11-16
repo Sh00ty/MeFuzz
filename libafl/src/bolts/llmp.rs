@@ -75,12 +75,12 @@ use core::{
     sync::atomic::{fence, AtomicU16, Ordering},
     time::Duration,
 };
-
+use tokio;
 #[cfg(all(unix, feature = "std"))]
 #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
 use std::os::unix::io::AsRawFd;
 
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
+
 #[cfg(feature = "std")]
 use std::{
     env,
@@ -106,7 +106,6 @@ use crate::bolts::os::unix_signals::{
 };
 use crate::{
     bolts::{
-        compress::GzipCompressor,
         shmem::{ShMem, ShMemDescription, ShMemId, ShMemProvider},
         ClientId,
     },
@@ -154,11 +153,11 @@ pub const LLMP_FLAG_FROM_B2B: Flags = Flags(0x2);
 ///  От брокера к мастеру и наоборот
 pub const LLMP_FLAG_B2M: Flags = Flags(0x4);
 /// новый тест-кейс
-pub const LLMP_NEW_TEST_CASE: Flags = Flags(0x8);
+pub const LLMP_FLAG_NEW_TEST_CASE: Flags = Flags(0x8);
 /// количество исполнений
-pub const LLMP_EXECS: Flags = Flags(0x16);
+pub const LLMP_FLAG_EVALUATION: Flags = Flags(0x10);
 /// конфигурация фаззера
-pub const LLMP_CONFIGURATION: Flags = Flags(0x32);
+pub const LLMP_FLAG_CONFIGURATION: Flags = Flags(0x20);
 
 /// Timt the broker 2 broker connection waits for incoming data,
 /// before checking for own data to forward again.
@@ -230,11 +229,11 @@ impl Debug for Flags {
         if *self & LLMP_FLAG_B2M == LLMP_FLAG_B2M {
             f.write_str("FROM_B2M ")?;
         }
-        if *self & LLMP_NEW_TEST_CASE == LLMP_NEW_TEST_CASE {
+        if *self & LLMP_FLAG_NEW_TEST_CASE == LLMP_FLAG_NEW_TEST_CASE {
             f.write_str("NEW_TESTCASE ")?;
         }
-        if *self & LLMP_EXECS == LLMP_EXECS {
-            f.write_str("NEW_TESTCASE ")?;
+        if *self & LLMP_FLAG_EVALUATION == LLMP_FLAG_EVALUATION {
+            f.write_str("LLMP_FLAG_EVALUATION ")?;
         }
         f.write_str(")")
     }
@@ -779,7 +778,7 @@ where
         shmem_provider: SP,
         port: u16,
         fuzzer_conf: Option<FuzzerConfiguration>,
-    ) -> Result<Self, Error> {
+            ) -> Result<Self, Error> {
         match tcp_bind(port) {
             Ok(listener) => {
                 // We got the port. We are the broker! :)
@@ -817,7 +816,7 @@ where
         shmem_provider: SP,
         port: u16,
         fuzzer_conf: Option<FuzzerConfiguration>,
-    ) -> Result<Self, Error> {
+            ) -> Result<Self, Error> {
         Ok(LlmpConnection::IsClient {
             client: LlmpClient::create_attach_to_tcp(shmem_provider, port, fuzzer_conf)?,
         })
@@ -1127,7 +1126,7 @@ where
                 "PROGRAM ABORT : BUG: EOP does not fit in page! page {page:?}, size_current {:?}, size_total {:?}",
                 ptr::addr_of!((*page).size_used), ptr::addr_of!((*page).size_total));
 
-        let mut ret: *mut LlmpMsg = if last_msg.is_null() {
+        let ret: *mut LlmpMsg = if last_msg.is_null() {
             (*page).messages.as_mut_ptr()
         } else {
             llmp_next_msg_ptr_checked(map, last_msg, EOP_MSG_SIZE)?
@@ -1340,7 +1339,7 @@ where
         let mut new_map_shmem =
             self.new_or_unused_shmem((*old_map).sender_id, next_min_shmem_size)?;
 
-        let mut new_map = new_map_shmem.page_mut();
+        let new_map = new_map_shmem.page_mut();
 
         #[cfg(feature = "llmp_debug")]
         log::info!("got new map at: {new_map:?}");
@@ -1360,7 +1359,7 @@ where
         let out = self.alloc_eop()?;
 
         #[allow(clippy::cast_ptr_alignment)]
-        let mut end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
+        let end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
         (*end_of_page_msg).map_size = new_map_shmem.shmem.len();
         (*end_of_page_msg).shm_str = *new_map_shmem.shmem.id().as_array();
 
@@ -2062,6 +2061,14 @@ where
         }
     }
 
+    // TODO: тут делаем чтобы брокер читал канал а не tcp соединение
+    // забудем пока что, что там вообще что-то лежит
+    // это на себя кажется возьмет tokio
+    // #[cfg(feature = "std")]
+    // pub fn create_attach_to_channel(shmem_provider: SP) -> Result<Self, Error> {
+    //     let mut broker = LlmpBroker::new(shmem_provider)?;
+    // }
+
     /// Set this broker to exit after at least `count` clients attached and all client exited.
     /// Will ignore the own listener thread, if `create_attach_to_tcp`
     ///
@@ -2172,69 +2179,20 @@ where
     /// Connects to a master running on another machine.
     /// This will spawn a new background thread, registered as client, that proxies all messages to a remote machine.
     /// Returns the description of the new page that still needs to be announced/added to the broker afterwards.
-    #[cfg(feature = "std")]
-    pub fn connect_b2m<A>(
+    pub fn connect_b2m(
         &mut self,
-        addr: A,
-        mut send_limit: u32,
-        mut recv_limit: u32,
-    ) -> Result<(), Error>
-    where
-        A: ToSocketAddrs,
-    {
+        recv: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<TcpMasterMessage>,
+        recv_limit: u32,
+        send_limit: u32,
+    ) -> Result<(), Error>{
+
         if self.has_master {
-            return Err(Error::illegal_state(
-                "master connection already exists".to_string(),
-            ));
-        }
-        let mut stream = TcpStream::connect(addr)?;
-        log::info!("B2M: Connected to {stream:?}");
-
-        let (broker_id, master_hostname, _send_limit, _recv_limit) =
-            match recv_tcp_msg(&mut stream)?.try_into()? {
-                TcpRequest::MasterNodeHello {
-                    broker_id,
-                    master_hostname,
-                    send_limit,
-                    recv_limit,
-                } => (broker_id, master_hostname, recv_limit, send_limit),
-                _ => {
-                    return Err(Error::illegal_state(
-                        "Unexpected response from B2M server received.".to_string(),
-                    ))
-                }
-            };
-        log::info!("B2M: Connected to {master_hostname}");
-
-        let hostname = hostname::get()
-            .unwrap_or_else(|_| "<unknown>".into())
-            .to_string_lossy()
-            .into();
-
-        send_tcp_msg(&mut stream, &TcpRequest::RemoteBrokerHello { hostname })?;
-
-        match recv_tcp_msg(&mut stream)?.try_into()? {
-            TcpResponse::BrokerAcceptedByMaster { harnes_hash: _ } => (),
-            _ => {
-                return Err(Error::illegal_state(
-                    "Unexpected response from B2M server received.".to_string(),
-                ))
-            }
-        };
-
-        log::info!("B2M: We are broker {broker_id:?}");
-        if send_limit == 0 {
-            send_limit = _send_limit;
-            log::info!("B2M: seted master send_limit={send_limit:?}");
-        }
-        if recv_limit == 0 {
-            recv_limit = _recv_limit;
-            log::info!("B2M: seted master recv_limit={recv_limit:?}");
+            return Ok(())
         }
 
         let map_description = Self::b2m_thread_on(
-            stream,
-            ClientId(self.llmp_clients.len() as u32),
+            ClientId(0),
             &self
                 .llmp_out
                 .out_shmems
@@ -2242,6 +2200,8 @@ where
                 .unwrap()
                 .shmem
                 .description(),
+                recv,
+                sender,
             send_limit,
             recv_limit,
         )?;
@@ -2250,17 +2210,17 @@ where
             self.shmem_provider
                 .shmem_from_description(map_description)?,
         );
-
-
         self.has_master = true;
-        self.register_client(new_shmem);
+        {
+            self.register_client(new_shmem);
+        }
 
         Ok(())
     }
 
     /// For internal use: Forward the current message to the out map.
     unsafe fn forward_msg(&mut self, msg: *mut LlmpMsg) -> Result<(), Error> {
-        let mut out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
+        let out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
 
         /* Copy over the whole message.
         If we should need zero copy, we could instead post a link to the
@@ -2658,11 +2618,12 @@ where
     #[cfg(feature = "std")]
     #[allow(clippy::let_and_return, clippy::too_many_lines)]
     fn b2m_thread_on(
-        mut stream: TcpStream,
         broker_id: ClientId,
         broker_shmem_description: &ShMemDescription,
-        send_limit: u32,
+        mut stream_recv: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        stream_sender: tokio::sync::mpsc::Sender<TcpMasterMessage>,
         recv_limit: u32,
+        send_limit: u32,
     ) -> Result<ShMemDescription, Error> {
         use core::panic;
 
@@ -2673,14 +2634,6 @@ where
         thread::spawn(move || {
             // Crete a new ShMemProvider for this background thread
             let shmem_provider_bg = SP::new().unwrap();
-
-            #[cfg(fature = "llmp_debug")]
-            log::info!("B2M: Spawned proxy thread");
-
-            // The background thread blocks on the incoming connection for 15 seconds (if no data is available), then checks if it should forward own messages, then blocks some more.
-            stream
-                .set_read_timeout(Some(_LLMP_B2M_BLOCK_TIME))
-                .expect("Failed to set tcp stream timeout");
 
             let mut new_sender = match LlmpSender::new(shmem_provider_bg.clone(), broker_id, false)
             {
@@ -2702,11 +2655,6 @@ where
                 },
             )
             .expect("Failed to map local page in broker 2 master thread!");
-
-            #[cfg(feature = "llmp_debug")]
-            log::info!("B2M: Starting proxy loop :)");
-
-            let peer_address = stream.peer_addr().unwrap();
 
             loop {
                 for _ in 0..send_limit {
@@ -2730,18 +2678,16 @@ where
                                 log::info!("B2M: Ignoring message with flag: {:#?}", flags);
                                 continue;
                             }
-
-                            // We got a new message! Forward...
-                            if let Err(e) = send_tcp_msg(
-                                &mut stream,
-                                &TcpMasterMessage {
-                                    client_id: sender_id,
-                                    flags,
-                                    payload : payload.to_vec(),
-                                }
-                            ) {
-                                log::info!("B2M: Got error {e} while trying to forward a message to master {peer_address}, exiting thread");
-                                return;
+                            match stream_sender.blocking_send(TcpMasterMessage{
+                                client_id: sender_id,
+                                flags,
+                                payload: payload.to_vec(),                               
+                            }){
+                                Ok(()) => {},
+                                Err(e) => {
+                                    log::error!("B2M: can't send message to master {}", e);
+                                    break;
+                                },
                             }
                         }
                         Err(Error::ShuttingDown) => {
@@ -2752,9 +2698,8 @@ where
                             if let Error::File(e, _) = e {
                                 if e.kind() == ErrorKind::UnexpectedEof {
                                     log::info!(
-                                        "B2M: Master {peer_address} seems to have disconnected, exiting"
+                                        "B2M: Master seems to have disconnected, exiting"
                                     );
-                                    // WTF_TODO: реконнект
                                     return;
                                 }
                                 panic!("B2M: unexpected error: {e}")
@@ -2772,7 +2717,7 @@ where
                 // We ignore errors completely as they may be timeout, or stream closings.
                 // Instead, we catch stream close when/if we next try to send.
                 for _ in 0..recv_limit {
-                    match recv_tcp_msg(&mut stream) {
+                    match stream_recv.try_recv() {
                         Ok(val) => {
                             let msg: TcpMasterMessage = val.try_into().expect(
                                 "Illegal message received from broker 2 master connection - shutting down.",
@@ -2794,20 +2739,18 @@ where
                                 .expect("B2M: Error forwarding message. Exiting.");
                         }
                         Err(e) => {
-                            if let Error::File(e, _) = e {
-                                if e.kind() == ErrorKind::UnexpectedEof {
+                            match e {
+                                tokio::sync::mpsc::error::TryRecvError::Empty => {
+                                    break;
+                                },
+                                _ => {
                                     log::info!(
-                                        "Master {peer_address} seems to have disconnected, exiting"
+                                        "B2M: Received no input, timeout or closed. Looping back up :)"
                                     );
-                                    // WTF_TODO: реконнект
-                                    return;
+                                    return; 
                                 }
                             }
-                            break;
-                            #[cfg(feature = "llmp_debug")]
-                            log::info!(
-                                "B2M: Received no input, timeout or closed. Looping back up :)"
-                            );
+                                              
                         }
                     }
                 }
@@ -2831,13 +2774,12 @@ where
         request: &TcpRequest,
         current_client_id: &mut ClientId,
         sender: &mut LlmpSender<SP>,
-        broker_shmem_description: &ShMemDescription,
-        has_master: &mut bool,
+        _broker_shmem_description: &ShMemDescription,
         fuzzers_configurations: &mut Vec<FuzzerConfiguration>,
     ) {
         match request {
             TcpRequest::LocalClientHello {
-                fuzzer_configuration,
+                                fuzzer_configuration,
                 shmem_description,
             } => {
                 match Self::announce_new_client(sender, shmem_description) {
@@ -2854,73 +2796,73 @@ where
                 };
                 log::info!("fuzzer configuration={:#?}", fuzzer_configuration);
                 fuzzers_configurations.push(fuzzer_configuration.clone());
-                current_client_id.0 += 1;
+            current_client_id.0 += 1;
             }
-            TcpRequest::RemoteBrokerHello { hostname } => {
-                log::info!("B2B new client: {hostname}");
+            // TcpRequest::RemoteBrokerHello { hostname } => {
+            // log::info!("B2B new client: {hostname}");
 
-                // TODO: Clean up broker ids.
-                if send_tcp_msg(
-                    &mut stream,
-                    &TcpResponse::RemoteBrokerAccepted {
-                        broker_id: BrokerId(current_client_id.0),
-                    },
-                )
-                .is_err()
-                {
-                    log::info!("Error accepting broker, ignoring.");
-                    return;
-                }
+            //     // TODO: Clean up broker ids.
+            //     if send_tcp_msg(
+            //         &mut stream,
+            //         &TcpResponse::RemoteBrokerAccepted {
+            //             broker_id: BrokerId(0),
+            //         },
+            //     )
+            //     .is_err()
+            //     {
+            //         log::info!("Error accepting broker, ignoring.");
+            //         return;
+            //     }
 
-                if let Ok(shmem_description) =
-                    Self::b2b_thread_on(stream, *current_client_id, broker_shmem_description)
-                {
-                    if Self::announce_new_client(sender, &shmem_description).is_err() {
-                        log::info!("B2B: Error announcing client {shmem_description:?}");
-                    };
-                    current_client_id.0 += 1;
-                }
-            }
+            //     if let Ok(shmem_description) =
+            //         Self::b2b_thread_on(stream, *current_client_id, broker_shmem_description)
+            //     {
+            //         if Self::announce_new_client(sender, &shmem_description).is_err() {
+            //             log::info!("B2B: Error announcing client {shmem_description:?}");
+            //         };
+            //         current_client_id.0 += 1;
+            //     }
+            // }
+            _ => {},
+            // TcpRequest::MasterNodeHello {
+            //     master_hostname,
+            //     send_limit,
+            //     recv_limit,
+            //     broker_id,
+            // } => {
+            //     log::info!("B2M: master want to connect {master_hostname}");
+            //     if *has_master {
+            //         log::info!("B2M: master connection already exists, ignorings");
+            //         return;
+            //     }
+            //     if send_tcp_msg(
+            //         &mut stream,
+            //         &TcpResponse::MasterAccepted {
+            //             fuzzer_configurations: fuzzers_configurations.clone(),
+            //             broker_id: BrokerId(*broker_id),
+            //         },
+            //     )
+            //     .is_err()
+            //     {
+            //         log::info!("Error accepting master, ignoring.");
+            //         return;
+            //     }
 
-            TcpRequest::MasterNodeHello {
-                master_hostname,
-                send_limit,
-                recv_limit,
-                broker_id,
-            } => {
-                log::info!("B2M: master want to connect {master_hostname}");
-                if *has_master {
-                    log::info!("B2M: master connection already exists, ignorings");
-                    return;
-                }
-                if send_tcp_msg(
-                    &mut stream,
-                    &TcpResponse::MasterAccepted {
-                        fuzzer_configurations: fuzzers_configurations.clone(),
-                        broker_id: BrokerId(*broker_id),
-                    },
-                )
-                .is_err()
-                {
-                    log::info!("Error accepting master, ignoring.");
-                    return;
-                }
-
-                if let Ok(shmem_description) = Self::b2m_thread_on(
-                    stream,
-                    *current_client_id,
-                    broker_shmem_description,
-                    *send_limit,
-                    *recv_limit,
-                ) {
-                    if Self::announce_new_client(sender, &shmem_description).is_err() {
-                        log::info!("B2M: Error announcing client {shmem_description:?}");
-                    };
-                    *has_master = true;
-                    current_client_id.0 += 1;
-                    log::info!("B2M: we are broker {broker_id}")
-                }
-            }
+            //     if let Ok(shmem_description) = Self::b2m_thread_on(
+            //         stream,
+            //         *current_client_id,
+            //         broker_shmem_description,
+            //         *send_limit,
+            //         *recv_limit,
+            //     ) {
+            //         if Self::announce_new_client(sender, &shmem_description).is_err() {
+            //             log::info!("B2M: Error announcing client {shmem_description:?}");
+            //         };
+            //         *has_master = true;
+            //         current_client_id.0 += 1;
+            //         log::info!("B2M: we are broker {broker_id}")
+            //     }
+            // }
         };
     }
 
@@ -2952,12 +2894,10 @@ where
         );
         let tcp_out_shmem_description = tcp_out_shmem.shmem.description();
         let listener_id = self.register_client(tcp_out_shmem);
-        let has_master = self.has_master;
         let fuzzer_configurations = self.fuzz_configurations.clone();
 
         let ret = thread::spawn(move || {
             let mut fuzzer_configurations = fuzzer_configurations;
-            let mut has_master = has_master;
             // Create a new ShMemProvider for this background thread.
             let mut shmem_provider_bg = SP::new().unwrap();
 
@@ -3018,7 +2958,6 @@ where
                             &mut current_client_id,
                             &mut tcp_incoming_sender,
                             &broker_shmem_description,
-                            &mut has_master,
                             &mut fuzzer_configurations,
                         );
                     }
@@ -3412,7 +3351,7 @@ where
         mut shmem_provider: SP,
         port: u16,
         fuzzer_conf: Option<FuzzerConfiguration>,
-    ) -> Result<Self, Error> {
+            ) -> Result<Self, Error> {
         let mut stream = match TcpStream::connect((_LLMP_CONNECT_ADDR, port)) {
             Ok(stream) => stream,
             Err(e) => {
@@ -3451,7 +3390,7 @@ where
         let mut ret = Self::new(shmem_provider, map, ClientId(0))?;
 
         let client_hello_req = TcpRequest::LocalClientHello {
-            fuzzer_configuration: fuzzer_conf.unwrap(),
+                        fuzzer_configuration: fuzzer_conf.unwrap(),
             shmem_description: ret.sender.out_shmems.first().unwrap().shmem.description(),
         };
 

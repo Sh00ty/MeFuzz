@@ -238,7 +238,7 @@ pub fn libafl_main() {
         .configuration(EventConfig::from_name("default"))
         .monitor(monitor)
         .run_client(&mut run_client)
-        .cores()
+        .cores(1)
         .broker_port(broker_port)
         .remote_broker_addr(opt.remote_broker_addr)
         .stdout_file(Some("/dev/null"))

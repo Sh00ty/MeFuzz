@@ -1,18 +1,16 @@
 package infodb
 
 import (
-	"github.com/pkg/errors"
-	"gonum.org/v1/gonum/spatial/vptree"
+	"fmt"
 	"math"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"sync"
 	"time"
-)
 
-const (
-	// сколько ближайших точек находить
-	nearestDataNeeded = 2
+	"github.com/influxdata/tdigest"
+	"github.com/okhowang/clusters"
+	"github.com/pkg/errors"
 )
 
 // CovData - хранит данные по покрытию и расстанию различных конфигураций фаззеров
@@ -22,70 +20,41 @@ type CovData struct {
 	// сделано для того чтобы смотреть статистику именно по конфигурациям
 	// но одинаковые конфигурации на разных машинах пока что разные тут фаззеры
 	// тк они в теории могут давать достаточно разносторонее покрытие
-	Fuzzers map[fuzzConfKey]*Fuzzer
-	// необходимо быстро находить ближайшего по расстоянию покрытия соседа
-	// дерево позволяющее делать быстрые запросы на ближайших соседей
-	Vptree *vptree.Tree
-	// время последнего обновления (в том числе и создания)
-	LastUpdate time.Time
-}
-
-// fuzzConfKey - однозначно идентифицирует фаззер в расчете на длительный период
-// (у фаззера может поменяться конфигурация)
-type fuzzConfKey struct {
-	FuzzerID entities.FuzzerID
-	Config   entities.FuzzerConf
+	Fuzzers map[entities.ElementID]*fuzzer
 }
 
 func NewCovData() *CovData {
 	return &CovData{
-		Fuzzers:    make(map[fuzzConfKey]*Fuzzer, 0),
-		LastUpdate: time.Now(),
+		Fuzzers: make(map[entities.ElementID]*fuzzer, 0),
 	}
 }
 
-func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
+// Под бдшным мьютексом
+func (d *CovData) AddFuzzer(f Fuzzer) {
 	d.mu.Lock()
-	d.Fuzzers[fuzzConfKey{
-		FuzzerID: fuzzer.ID,
-		Config:   fuzzer.Configuration,
-	}] = &Fuzzer{
-		Cov:           [entities.CovSize]float64{},
-		TestcaseCount: [entities.CovSize]uint{},
-		mu:            &sync.Mutex{},
+	d.Fuzzers[f.ID] = &fuzzer{
+		mu: &sync.Mutex{},
 	}
 	d.mu.Unlock()
 }
 
-func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) {
-	key := fuzzConfKey{
-		FuzzerID: fuzzerID,
-		Config:   conf,
-	}
-
+func (d *CovData) DeleteFuzzer(id entities.ElementID) error {
 	d.mu.Lock()
-	if _, exists := d.Fuzzers[key]; exists {
-		d.mu.Unlock()
-		return
+	defer d.mu.Unlock()
+
+	_, exists := d.Fuzzers[id]
+	if !exists {
+		return errors.Errorf("fuzzer %d doesn't exists", id)
 	}
-	d.Fuzzers[key] = &Fuzzer{
-		Cov:           [entities.CovSize]float64{},
-		TestcaseCount: [entities.CovSize]uint{},
-		mu:            &sync.Mutex{},
-	}
-	d.mu.Unlock()
+	delete(d.Fuzzers, id)
+	return nil
 }
 
-func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entities.FuzzerConf, cov entities.Coverage) {
-	key := fuzzConfKey{
-		FuzzerID: fuzzerID,
-		Config:   config,
-	}
+func (d *CovData) AddTestcaseCoverage(fuzzerID entities.ElementID, config entities.FuzzerConf, cov entities.Coverage) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	d.mu.Lock()
-	fuzzer, exists := d.Fuzzers[key]
-	d.mu.Unlock()
-
+	fuzzer, exists := d.Fuzzers[fuzzerID]
 	if !exists {
 		logger.ErrorMessage("not found fuzzer with id=%v and conf=%v", fuzzerID, config)
 		return
@@ -94,8 +63,7 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 	fuzzer.mu.Lock()
 	for j, tr := range cov {
 		if tr != 0 {
-			fuzzer.TestcaseCount[j]++
-			fuzzer.Cov[j] += float64(tr)
+			fuzzer.Cov[j] = 1
 		}
 	}
 	fuzzer.mu.Unlock()
@@ -103,95 +71,164 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 	logger.Debugf("added coverage for fuzzerID %v and conf %v", fuzzerID, config)
 }
 
-type Fuzzer struct {
+type fuzzer struct {
 	mu *sync.Mutex
 	// оригинальное покрытие за весь процесс фаззинга
-	Cov [entities.CovSize]float64
-	// кол-во тест-кейсов фаззера на каждый элемент бранч
-	// для того чтобы уровнять дистанию от много создающих фаззеров
-	// так же для того чтобы редкое покрытие вносило больший импакт
-	TestcaseCount [entities.CovSize]uint
+	Cov [entities.CovSize]uint32
 	// квадрат длины вектора покрытия, нельзя сравнивать расстояние между фаззерами
 	// если один фаззер не будет никуда двигаться
 	// поэтому стоит отсекать такие моменты с помощью расстояние от начала координат
 	// ну и в целом оно дает представление о том что фаззер стоит на месте и никуда не двигается
 	SqNorm float64
-	// Хранит значения SqNorm которое было в прошлой итерации, таким образом можно оценивать
-	// на сколько все это дело сдвинулось
-	PrevSqNorm float64
-	// вспомогательная структура для хранения фаззера в дереве
-	// внутри нее покрытие не за все время, а за переод до ее создания
-	vpFuzzer *vpfuzzer
 }
 
-// vpfuzzer - вспомогательная структура, для подсчета расстояний на основе дерева
-type vpfuzzer struct {
-	Key      fuzzConfKey
-	Coverage [entities.CovSize]float64
+type ClusteringData struct {
+	Clusters map[int][]entities.ElementID
+	Noice    []entities.ElementID
 }
 
-// Distance считает расстояние до c
-func (p *vpfuzzer) Distance(c vptree.Comparable) float64 {
-	var (
-		q    = c.(*vpfuzzer)
-		dist float64
-	)
-	for k, p := range p.Coverage {
-		diff := p - q.Coverage[k]
-		dist += diff * diff
+func (c ClusteringData) String() string {
+	if len(c.Clusters) == 0 {
+		return "No clustering results available"
 	}
-	return math.Sqrt(dist)
+	str := "Clustering result:\n"
+	for num, cl := range c.Clusters {
+		str += fmt.Sprintf("cluster %d ---> %v", num, cl)
+	}
+	str += fmt.Sprintf("Noice points ---> %v", c.Noice)
+	return str
 }
 
-// UpdateDistances обновляет дерево с расстояниями между фаззерами и так-же обновляет
-// квадрат нормы для векторов покрытия
-func (d *CovData) UpdateDistances() (err error) {
-	d.mu.Lock()
-	// приводим покрытие в правильный формат, тк исходный формат не совсем валидный для анализа
-	vpFuzzers := make([]vptree.Comparable, 0, len(d.Fuzzers))
-	for key, fuzzer := range d.Fuzzers {
+type Norm [2]float64
+
+func (n Norm) Norm() float64 {
+	return n[1]
+}
+
+func (n Norm) Speed() float64 {
+	return math.Abs(n[1] - n[0])
+}
+
+type Analyze struct {
+	// norms in sorted order (Asc)
+	Norms map[entities.ElementID]Norm
+	// data after clustering algorithm
+	ClusteringData ClusteringData
+	// coverages of all fuzzers
+	Coverages map[entities.ElementID][]float64
+}
+
+var distFn = func(f1, f2 []float64) float64 {
+	var dst float64
+	for i := range f1 {
+		diff := f1[i] - f2[i]
+		dst += diff * diff
+	}
+	return math.Sqrt(dst)
+}
+
+func (d *CovData) calculate() ([]entities.ElementID, [][]float64, map[entities.ElementID]Norm) {
+
+	var (
+		fuzzerIDs = make([]entities.ElementID, 0, len(d.Fuzzers))
+		coverages = make([][]float64, 0, len(d.Fuzzers))
+		norms     = make(map[entities.ElementID]Norm, len(d.Fuzzers))
+	)
+
+	for id, fuzzer := range d.Fuzzers {
+		fuzzer.mu.Lock()
 		var (
-			cov    = [entities.CovSize]float64{}
+			cov    = make([]float64, entities.CovSize)
 			sqNorm = float64(0)
 		)
-		fuzzer.mu.Lock()
 		for i := 0; i < entities.CovSize; i++ {
-			cov[i] = fuzzer.Cov[i] / math.Max(float64(fuzzer.TestcaseCount[i]), 1)
+			cov[i] = float64(fuzzer.Cov[i])
 			sqNorm += cov[i] * cov[i]
 		}
-		vf := vpfuzzer{
-			Key:      key,
-			Coverage: cov,
-		}
-
-		fuzzer.vpFuzzer = &vf
-		fuzzer.PrevSqNorm = fuzzer.SqNorm
+		coverages = append(coverages, cov)
+		fuzzerIDs = append(fuzzerIDs, id)
+		norm := Norm{math.Sqrt(fuzzer.SqNorm), math.Sqrt(sqNorm)}
+		norms[id] = norm
 		fuzzer.SqNorm = sqNorm
-		fuzzer.mu.Unlock()
 
-		d.Fuzzers[key] = fuzzer
-		vpFuzzers = append(vpFuzzers, &vf)
+		fuzzer.mu.Unlock()
 	}
-	d.Vptree, err = vptree.New(vpFuzzers, 3, nil)
-	if err != nil {
-		d.mu.Unlock()
-		return errors.Wrap(err, "failed to build vptree")
-	}
-	d.LastUpdate = time.Now()
-	d.mu.Unlock()
-	return nil
+
+	return fuzzerIDs, coverages, norms
 }
 
-// GetNearestDistances - функция пока что для отладки
-func (d *CovData) GetNearestDistances() {
-	for key, fuzzer := range d.Fuzzers {
-		logger.Debugf("Norm for %v = %f", key.FuzzerID, math.Sqrt(fuzzer.SqNorm))
+func (d *CovData) getClusters(fuzzerIDs []entities.ElementID, fuzzerCovMat [][]float64, eps float64) (ClusteringData, error) {
+	dbscan, err := clusters.DBSCAN(2, eps, 4, distFn)
+	if err != nil {
+		return ClusteringData{}, err
+	}
+	err = dbscan.Learn(fuzzerCovMat)
+	if err != nil {
+		return ClusteringData{}, err
+	}
 
-		keeper := vptree.NewNKeeper(nearestDataNeeded + 1)
-		d.Vptree.NearestSet(keeper, fuzzer.vpFuzzer)
-		for i, res := range keeper.Heap {
-			r := res.Comparable.(*vpfuzzer)
-			logger.Debugf("the closest [%d] for %v is %v; dist=%f", i, key.FuzzerID, r.Key.FuzzerID, res.Dist)
+	clusters := dbscan.Guesses()
+	res := ClusteringData{
+		Clusters: make(map[int][]entities.ElementID, len(clusters)),
+	}
+	for fuzzInd, cluster := range clusters {
+		if cluster != -1 {
+			res.Clusters[cluster] = append(res.Clusters[cluster], fuzzerIDs[fuzzInd])
+			continue
+		}
+		res.Noice = append(res.Noice, fuzzerIDs[fuzzInd])
+	}
+	return res, nil
+}
+
+func (d *CovData) CreateAnalyze() (Analyze, error) {
+	t := time.Now()
+	defer func() {
+		analyzeCreationTime.Observe(float64(time.Since(t).Milliseconds()))
+	}()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	fuzzerIDs, coverages, norms := d.calculate()
+	td := tdigest.New()
+	for i := 0; i < len(coverages); i++ {
+		for j := i; j < len(coverages); j++ {
+			td.Add(distFn(coverages[i], coverages[j]), 1)
 		}
 	}
+	if len(coverages) == 0 {
+		return Analyze{}, nil
+	}
+	var (
+		clusteringDataRes ClusteringData
+	)
+loop:
+	for quanile := 0.5; quanile >= 0.1; quanile -= 0.02 {
+		clusteringData, err := d.getClusters(fuzzerIDs, coverages, td.Quantile(quanile))
+		if err != nil {
+			return Analyze{}, err
+		}
+		for _, cluster := range clusteringData.Clusters {
+			if float64(len(cluster)) > float64(len(fuzzerIDs))*0.5 {
+				continue loop
+			}
+		}
+		if float64(len(clusteringData.Noice)) >= float64(len(fuzzerIDs))*0.8 {
+			logger.Infof("used %.2f quantile", quanile+0.02)
+			break
+		}
+		clusteringDataRes = clusteringData
+		logger.Infof("used %f quantile", quanile)
+		break
+	}
+	an := Analyze{
+		ClusteringData: clusteringDataRes,
+		Norms:          norms,
+		Coverages:      make(map[entities.ElementID][]float64, len(coverages)),
+	}
+	for i, cov := range coverages {
+		an.Coverages[fuzzerIDs[i]] = cov
+	}
+
+	return an, nil
 }

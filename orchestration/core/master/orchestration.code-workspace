@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../fuzzers/forkserver_simple"
+		}
+	],
+	"settings": {}
+}

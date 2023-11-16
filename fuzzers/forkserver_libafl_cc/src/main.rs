@@ -215,33 +215,23 @@
 //         .expect("Error in the fuzzing loop");
 // }
 
-use core::{cell::RefCell, time::Duration};
+use core::{time::Duration};
 use std::{
     env,
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self},
     path::PathBuf,
-    process,
 };
-use std::iter::Map;
+
 
 use clap::{Arg, ArgAction, Command};
-use libafl::inputs::Input;
+
 use libafl::{bolts::{
-    current_nanos, current_time,
+    current_nanos,
     rands::StdRand,
     shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-    tuples::{tuple_list, Merge},
+    tuples::{tuple_list},
     AsMutSlice,
-}, corpus::{Corpus, InMemoryCorpus}, events::SimpleEventManager, executors::forkserver::{ForkserverExecutor, TimeoutForkserverExecutor}, feedback_or, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{Fuzzer, StdFuzzer}, inputs::BytesInput, monitors::SimpleMonitor, mutators::{
-    scheduled::havoc_mutations, token_mutations::I2SRandReplace, tokens_mutations,
-    StdMOptMutator, StdScheduledMutator, Tokens,
-}, observers::{AFLCmpMap, HitcountsMapObserver, StdCmpObserver, StdMapObserver, TimeObserver}, schedulers::{
-    powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
-}, stages::{
-    calibrate::CalibrationStage, power::StdPowerMutationalStage, StdMutationalStage,
-    TracingStage,
-}, state::{HasCorpus, HasMetadata, StdState}, Error, feedback_or_fast};
+}, corpus::{InMemoryCorpus}, executors::forkserver::{ForkserverExecutor, TimeoutForkserverExecutor}, feedback_or, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{StdFuzzer}, inputs::BytesInput, observers::{HitcountsMapObserver, StdMapObserver, TimeObserver}, state::{StdState}, Error, feedback_or_fast};
 use libafl::prelude::NopEventManager;
 use libafl::schedulers::StdScheduler;
 use nix::sys::signal::Signal;
@@ -404,7 +394,7 @@ fn collect_coverage(
     env::set_var("AFL_MAP_SIZE", format!("{}", MAP_SIZE));
 
     // Create an observation channel using the hitcounts map of AFL++
-    let mut edges_observer =
+    let edges_observer =
         unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
 
     // Create an observation channel to keep track of the execution time

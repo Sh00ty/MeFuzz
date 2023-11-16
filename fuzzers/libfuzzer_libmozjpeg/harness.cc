@@ -2,6 +2,15 @@
 #include "jpeglib.h"
 #include <setjmp.h>
 #include <stdint.h>
+#ifndef __AFL_FUZZ_TESTCASE_LEN
+  ssize_t fuzz_len;
+  #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
+  unsigned char fuzz_buf[1024000];
+  #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf
+  #define __AFL_FUZZ_INIT() void sync(void);
+  #define __AFL_LOOP(x) ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
+  #define __AFL_INIT() sync()
+#endif
 
 struct my_error_mgr {
   struct jpeg_error_mgr pub; /* "public" fields */
@@ -74,8 +83,15 @@ int do_read_JPEG_file(struct jpeg_decompress_struct *cinfo,
   return 1;
 }
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-  struct jpeg_decompress_struct cinfo;
-  do_read_JPEG_file(&cinfo, data, size);
+int main(int argc, char **argv) {
+  FILE *file = stdin;
+  if (argc > 1) { file = fopen(argv[1], "rb"); }
+
+  const uint8_t *data = (uint8_t*)__AFL_FUZZ_TESTCASE_BUF;
+  while (__AFL_LOOP(1)) {
+    auto size = __AFL_FUZZ_TESTCASE_LEN;
+    struct jpeg_decompress_struct cinfo;
+    do_read_JPEG_file(&cinfo, data, size);
+  }
   return 0;
 }

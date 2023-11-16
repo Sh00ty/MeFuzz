@@ -1,29 +1,34 @@
 package entities
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
-type ClientID uint
-type NodeID uint64
-type NodeType int8
+type (
+	OnNodeID    uint32
+	NodeID      uint32
+	ElementType int8
+)
 
 const (
-	Undefined NodeType = iota
+	Undefined ElementType = iota
+	// с брокером хотя бы один фаззер точно поднимается
 	Broker
+	Fuzzer
 	Evaler
 )
 
-type FuzzInfoKind uint8
+type Flags uint8
 
 const (
-	Compressed FuzzInfoKind = 1 << iota
-	_
-	Master
-	NewTestCase
-	_
-	Configuration
+	Compressed    Flags = 0x1
+	Master        Flags = 0x4
+	NewTestCase   Flags = 0x8
+	Evaluation    Flags = 0x16
+	Configuration Flags = 0x32
 )
 
 const (
@@ -32,52 +37,36 @@ const (
 )
 
 var (
-	MasterFuzzerID = FuzzerID{
-		ClientID: math.MaxInt16,
-		NodeID:   math.MaxInt16,
+	MasterFuzzerID = ElementID{
+		NodeID:   0,
+		OnNodeID: math.MaxUint16,
 	}
 )
 
-func (f FuzzInfoKind) Has(flag FuzzInfoKind) bool {
+func (f Flags) Has(flag Flags) bool {
 	return flag == f&flag
 }
 
-func (f FuzzInfoKind) Add(flag FuzzInfoKind) FuzzInfoKind {
+func (f Flags) Add(flag Flags) Flags {
 	return f | flag
 }
 
-type FuzzerID struct {
-	ClientID ClientID
+type ElementID struct {
 	NodeID   NodeID
+	OnNodeID OnNodeID
 }
 
-type Fuzzer struct {
-	ID            FuzzerID
-	Configuration FuzzerConf
-	BugsFound     uint
-	Registered    time.Time
-	Testcases     map[uint64]struct{}
-}
-
-type FuzzerMessage struct {
-	From FuzzerID
-	Info FuzzerInformation
-}
-
-type FuzzerInformation interface {
-	Kind() FuzzInfoKind
+func (e ElementID) String() string {
+	return fmt.Sprintf("%d-%d", e.NodeID, e.OnNodeID)
 }
 
 type Testcase struct {
 	ID         uint64
+	FuzzerID   ElementID
 	InputData  []byte
-	Execs      uint32
-	CorpusSize uint32
+	Execs      uint64
+	CorpusSize uint64
 	CreatedAt  time.Time
-}
-
-func (Testcase) Kind() FuzzInfoKind {
-	return NewTestCase
 }
 
 type (
@@ -96,26 +85,22 @@ type FuzzerConf struct {
 	ForkMode   bool
 }
 
-func (FuzzerConf) Kind() FuzzInfoKind {
-	return Configuration
-}
-
 type EvaluatingData struct {
 	Cov      Coverage
 	HasCrash bool
 	NewCov   uint
 }
 
-type Coverage [CovSize]byte
-
-func (cov Coverage) Add(newCov []int16) {
-	minLen := 0
-	if len(cov) < len(newCov) {
-		minLen = len(cov)
-	} else {
-		minLen = len(newCov)
+func (e EvaluatingData) String() string {
+	s := strings.Builder{}
+	s.WriteString("\nCov: [ ")
+	for i, c := range e.Cov {
+		if c != 0 {
+			s.WriteString(fmt.Sprintf("%d:%d ", i, c))
+		}
 	}
-	for i := 0; i < minLen; i++ {
-		cov[i] += byte(newCov[i])
-	}
+	s.WriteString(fmt.Sprintf("]\nHasCrash=%t\n", e.HasCrash))
+	return s.String()
 }
+
+type Coverage [CovSize]byte

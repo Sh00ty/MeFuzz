@@ -204,6 +204,8 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
     // If your target is very instable, setting a low count here may help.
     // However, you will lose a lot of performance that way.
     let iters = 10_000;
+
+
     fuzzer.fuzz_loop_for(
         &mut stages,
         &mut executor,

@@ -1,0 +1,85 @@
+version: '2.1'
+
+networks:
+  master-net:
+    driver: bridge
+
+volumes:
+    mefuzz_data: {}
+    prometheus_data: {}
+    grafana_data: {}
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./infra/metrics/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    ports:
+      - '9090:9090'
+    networks:
+      - master-net
+    labels:
+      org.label-schema.group: "mefuzz-zeta"
+
+  alertmanager:
+    image: prom/alertmanager:v0.20.0
+    container_name: alertmanager
+    volumes:
+      - ./infra/metrics/alertmanager:/etc/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/config.yaml'
+      - '--storage.path=/alertmanager'
+    restart: unless-stopped
+    ports:
+      - '9093:9093'
+    networks:
+      - master-net
+    labels:
+      org.label-schema.group: "mefuzz-zeta"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/metrics/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    networks:
+      - master-net
+    labels:
+      org.label-schema.group: "mefuzz-zeta"
+  
+  mefuzz:
+    build:
+      context: ./
+      dockerfile: ./build/Dockerfile
+    container_name: mefuzz
+    volumes:
+      - ./mefuzz_data:/corpus
+    environment:
+      - CORPUS_DIR=corpus
+      - LOG_LEVEL=info
+    ports:
+      - '9000:9000'
+      - '9990:9990'
+    restart: unless-stopped
+    networks:
+      - master-net
+    labels:
+      org.label-schema.group: "mefuzz-zeta"

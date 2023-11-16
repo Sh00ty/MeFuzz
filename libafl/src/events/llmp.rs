@@ -543,7 +543,7 @@ where
         event: Event<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
         use crate::bolts::llmp::{
-            LLMP_EXECS, LLMP_FLAG_B2M, LLMP_FLAG_FROM_B2B, LLMP_NEW_TEST_CASE,
+            LLMP_FLAG_B2M, LLMP_FLAG_FROM_B2B, LLMP_NEW_TEST_CASE,
         };
 
         let serialized = rmp_serde::to_vec(&event)?;

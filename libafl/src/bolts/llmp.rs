@@ -80,7 +80,7 @@ use core::{
 #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
 use std::os::unix::io::AsRawFd;
 
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
+
 #[cfg(feature = "std")]
 use std::{
     env,
@@ -106,7 +106,6 @@ use crate::bolts::os::unix_signals::{
 };
 use crate::{
     bolts::{
-        compress::GzipCompressor,
         shmem::{ShMem, ShMemDescription, ShMemId, ShMemProvider},
         ClientId,
     },
@@ -1127,7 +1126,7 @@ where
                 "PROGRAM ABORT : BUG: EOP does not fit in page! page {page:?}, size_current {:?}, size_total {:?}",
                 ptr::addr_of!((*page).size_used), ptr::addr_of!((*page).size_total));
 
-        let mut ret: *mut LlmpMsg = if last_msg.is_null() {
+        let ret: *mut LlmpMsg = if last_msg.is_null() {
             (*page).messages.as_mut_ptr()
         } else {
             llmp_next_msg_ptr_checked(map, last_msg, EOP_MSG_SIZE)?
@@ -1340,7 +1339,7 @@ where
         let mut new_map_shmem =
             self.new_or_unused_shmem((*old_map).sender_id, next_min_shmem_size)?;
 
-        let mut new_map = new_map_shmem.page_mut();
+        let new_map = new_map_shmem.page_mut();
 
         #[cfg(feature = "llmp_debug")]
         log::info!("got new map at: {new_map:?}");
@@ -1360,7 +1359,7 @@ where
         let out = self.alloc_eop()?;
 
         #[allow(clippy::cast_ptr_alignment)]
-        let mut end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
+        let end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
         (*end_of_page_msg).map_size = new_map_shmem.shmem.len();
         (*end_of_page_msg).shm_str = *new_map_shmem.shmem.id().as_array();
 
@@ -2260,7 +2259,7 @@ where
 
     /// For internal use: Forward the current message to the out map.
     unsafe fn forward_msg(&mut self, msg: *mut LlmpMsg) -> Result<(), Error> {
-        let mut out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
+        let out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
 
         /* Copy over the whole message.
         If we should need zero copy, we could instead post a link to the

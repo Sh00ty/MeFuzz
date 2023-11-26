@@ -1,32 +1,19 @@
 use core::time::Duration;
+use std::io::Read;
 use std::path::PathBuf;
+use std::string;
 
 use clap::{self, Parser};
-use libafl::{
-    bolts::{
-        current_nanos,
-        rands::StdRand,
-        shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-        tuples::{tuple_list, MatchName, Merge},
-        AsMutSlice,
-    },
-    corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
-    events::SimpleEventManager,
-    executors::{
-        forkserver::{ForkserverExecutor, TimeoutForkserverExecutor},
-        HasObservers,
-    },
-    feedback_and_fast, feedback_or,
-    feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback},
-    fuzzer::{Fuzzer, StdFuzzer},
-    inputs::BytesInput,
-    monitors::SimpleMonitor,
-    mutators::{scheduled::havoc_mutations, tokens_mutations, StdScheduledMutator, Tokens},
-    observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver},
-    schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler},
-    stages::mutational::StdMutationalStage,
-    state::{HasCorpus, HasMetadata, StdState},
-};
+use libafl::{bolts::{
+    current_nanos,
+    rands::StdRand,
+    shmem::{ShMem, ShMemProvider, UnixShMemProvider},
+    tuples::{tuple_list, MatchName, Merge},
+    AsMutSlice,
+}, corpus::{Corpus, InMemoryCorpus, OnDiskCorpus}, Evaluator, EvaluatorObservers, events::SimpleEventManager, executors::{
+    forkserver::{ForkserverExecutor, TimeoutForkserverExecutor},
+    HasObservers,
+}, feedback_and_fast, feedback_or, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{Fuzzer, StdFuzzer}, HasFeedback, HasObjective, inputs::BytesInput, monitors::SimpleMonitor, mutators::{scheduled::havoc_mutations, tokens_mutations, StdScheduledMutator, Tokens}, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, stages::mutational::StdMutationalStage, state::{HasCorpus, HasMetadata, StdState}};
 use nix::sys::signal::Signal;
 
 /// The commandline args this fuzzer accepts
@@ -43,13 +30,6 @@ struct Opt {
         required = true
     )]
     executable: String,
-
-    #[arg(
-        help = "The directory to read initial inputs from ('seeds')",
-        name = "INPUT_DIR",
-        required = true
-    )]
-    in_dir: PathBuf,
 
     #[arg(
         help = "Timeout for each individual execution, in milliseconds",
@@ -87,11 +67,10 @@ struct Opt {
 
 #[allow(clippy::similar_names)]
 pub fn main() {
+
     const MAP_SIZE: usize = 65536;
 
     let opt = Opt::parse();
-
-    let corpus_dirs: Vec<PathBuf> = [opt.in_dir].to_vec();
 
     // The unix shmem provider supported by AFL++ for shared memory
     let mut shmem_provider = UnixShMemProvider::new().unwrap();
@@ -121,8 +100,6 @@ pub fn main() {
     // A feedback to choose if an input is a solution or not
     // We want to do the same crash deduplication that AFL does
     let mut objective = feedback_and_fast!(
-        // Must be a crash
-        CrashFeedback::new(),
         // Take it only if trigger new coverage over crashes
         // Uses `with_name` to create a different history from the `MaxMapFeedback` in `feedback` above
         MaxMapFeedback::with_name("mapfeedback_metadata_objective", &edges_observer)
@@ -136,7 +113,7 @@ pub fn main() {
         InMemoryCorpus::<BytesInput>::new(),
         // Corpus in which we store solutions (crashes in this example),
         // on disk so the user can get them after stopping the fuzzer
-        OnDiskCorpus::new(PathBuf::from("./crashes")).unwrap(),
+        InMemoryCorpus::<BytesInput>::new(),
         // States of the feedbacks.
         // The feedbacks can report the data that should persist in the State.
         &mut feedback,
@@ -146,7 +123,7 @@ pub fn main() {
     .unwrap();
 
     // The Monitor trait define how the fuzzer stats are reported to the user
-    let monitor = SimpleMonitor::new(|s| println!("{s}"));
+    let mut monitor = SimpleMonitor::new(|s| println!("{s}"));
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus
@@ -190,27 +167,18 @@ pub fn main() {
     )
     .expect("Failed to create the executor.");
 
-    // In case the corpus is empty (on first run), reset
-    if state.must_load_initial_inputs() {
-        state
-            .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &corpus_dirs)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "Failed to load initial corpus at {:?}: {:?}",
-                    &corpus_dirs, err
-                )
-            });
-        println!("We imported {} inputs from disk.", state.corpus().count());
-    }
-
     state.add_metadata(tokens);
 
-    // Setup a mutational stage with a basic bytes mutator
-    let mutator =
-        StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    let inp = BytesInput::new(String::from("bak").into_bytes());
+    let res = fuzzer.evaluate_input(&mut state, &mut executor, &mut mgr,inp);
+    dbg!(res.unwrap());
 
-    fuzzer
-        .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
-        .expect("Error in the fuzzing loop");
+    let inp = BytesInput::new(String::from("tom").into_bytes());
+    let res = fuzzer.evaluate_input(&mut state, &mut executor, &mut mgr,inp);
+    dbg!(res.unwrap());
+
+
+    let inp = BytesInput::new(String::from("bad").into_bytes());
+    let res = fuzzer.evaluate_input(&mut state, &mut executor, &mut mgr,inp);
+    dbg!(res.unwrap());
 }

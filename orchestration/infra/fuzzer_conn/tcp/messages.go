@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"fmt"
+	"orchestration/entities"
 	"time"
 )
 
@@ -116,4 +117,13 @@ type updateExecsStats struct {
 type infraMessageHello struct {
 	Kind int32 `msgpack:"kind"`
 	// todo: fuzzer registrations or empty for evalera
+}
+
+type evaluationOutput struct {
+	EvalData []evaluationOutput `msgpack:"eval_data"`
+}
+
+type evaluationData struct {
+	ExecInfo uint64                 `msgpack:"exec_info"`
+	Coverage [entities.CovSize]byte `msgpack:"coverage"`
 }

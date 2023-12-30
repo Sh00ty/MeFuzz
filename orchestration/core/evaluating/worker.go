@@ -6,18 +6,19 @@ import (
 	"time"
 )
 
-type evaluator interface {
+type evalClnt interface {
 	// Evaluate - оценивает полученные тест-кейсы
 	Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingData, error)
 }
 
 type fuzzInfoDB interface {
 	AddFuzzer(fuzzer entities.Fuzzer) error
-	AddTestcases(idList []entities.FuzzerID, tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
+	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
 }
 
 const (
-	evalRetryCount = 3
+	evalRetryCount = 1
+	bufferMaxSize  = 128
 )
 
 // эта штука очень хорошо и правильно скейлится
@@ -27,37 +28,29 @@ type monitoring struct {
 	recvMsgChan <-chan entities.FuzzerMessage
 
 	closeChan chan struct{}
-	isClosed  bool
 
-	evaler evaluator
+	evaler evalClnt
 	db     fuzzInfoDB
 
-	tcBuf         []entities.Testcase
-	fuzzerIDBuf   []entities.FuzzerID
-	bufferMaxSize uint
+	tcBuf []entities.Testcase
 
 	saveTimeout time.Duration
 }
 
 func New(
 	recvMsgChan <-chan entities.FuzzerMessage,
-	evaler evaluator,
 	db fuzzInfoDB,
-	bufferMaxSize uint,
 	saveTimeout time.Duration,
 ) *monitoring {
 	if bufferMaxSize < 1 {
 		panic("buffer size must be greater then 0")
 	}
 	return &monitoring{
-		recvMsgChan:   recvMsgChan,
-		evaler:        evaler,
-		db:            db,
-		closeChan:     make(chan struct{}),
-		tcBuf:         make([]entities.Testcase, 0, bufferMaxSize),
-		fuzzerIDBuf:   make([]entities.FuzzerID, 0, bufferMaxSize),
-		saveTimeout:   saveTimeout,
-		bufferMaxSize: bufferMaxSize,
+		recvMsgChan: recvMsgChan,
+		db:          db,
+		closeChan:   make(chan struct{}),
+		tcBuf:       make([]entities.Testcase, 0, bufferMaxSize),
+		saveTimeout: saveTimeout,
 	}
 }
 
@@ -67,7 +60,7 @@ func (m *monitoring) Run() {
 	for {
 		select {
 		case <-ticker.C:
-			m.saveBuf()
+			m.flush()
 		case msg := <-m.recvMsgChan:
 			switch msg.Info.Kind() {
 			case entities.Configuration:
@@ -81,11 +74,10 @@ func (m *monitoring) Run() {
 				}
 				logger.Infof("ADDED NEW FUZZER: %v", msg.From)
 			case entities.NewTestCase:
-				m.fuzzerIDBuf = append(m.fuzzerIDBuf, msg.From)
 				m.tcBuf = append(m.tcBuf, msg.Info.(entities.Testcase))
 
-				if uint(len(m.tcBuf)) == m.bufferMaxSize {
-					m.saveBuf()
+				if uint(len(m.tcBuf)) == bufferMaxSize {
+					m.flush()
 				}
 			}
 		case <-m.closeChan:
@@ -95,34 +87,29 @@ func (m *monitoring) Run() {
 }
 
 func (m *monitoring) Close() {
-	if !m.isClosed {
-		m.isClosed = true
-		m.closeChan <- struct{}{}
-		close(m.closeChan)
+	select {
+	case <-m.closeChan:
+		return
+	default:
 	}
+
+	close(m.closeChan)
 }
 
-func (m *monitoring) saveBuf() {
+func (m *monitoring) flush() {
 	if len(m.tcBuf) == 0 {
 		return
 	}
 
-	tcBuf := m.tcBuf
-	m.tcBuf = make([]entities.Testcase, 0, m.bufferMaxSize)
-
-	fuzzerIDBuf := m.fuzzerIDBuf
-	m.fuzzerIDBuf = make([]entities.FuzzerID, 0, m.bufferMaxSize)
-
-	go func() {
-		for i := 0; i < evalRetryCount; i++ {
-			evalData, err := m.evaler.Evaluate(tcBuf)
-			if err != nil {
-				logger.Errorf(err, "try [%d]: failed to evaluate %d testcases", i, len(tcBuf))
-				continue
-			}
-			m.db.AddTestcases(fuzzerIDBuf, tcBuf, evalData)
-			return
+	for i := 0; i < evalRetryCount+1; i++ {
+		evalData, err := m.evaler.Evaluate(m.tcBuf)
+		if err != nil {
+			logger.Errorf(err, "try [%d]: failed to evaluate %d testcases", i, len(m.tcBuf))
+			continue
 		}
-	}()
+		m.db.AddTestcases(m.tcBuf, evalData)
+		return
+	}
 
+	m.tcBuf = m.tcBuf[:0]
 }

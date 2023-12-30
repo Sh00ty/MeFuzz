@@ -1,14 +1,15 @@
 package infodb
 
 import (
-	"github.com/emirpasic/gods/trees/redblacktree"
-	"github.com/pkg/errors"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"os"
 	"path"
 	"strconv"
 	"time"
+
+	"github.com/emirpasic/gods/trees/redblacktree"
+	"github.com/pkg/errors"
 )
 
 type seed struct {
@@ -25,7 +26,7 @@ func seedCmp(ai interface{}, bi interface{}) int {
 	if a.ID == b.ID {
 		return 0
 	}
-	if a.Crash || b.Crash == true {
+	if a.Crash || b.Crash {
 		if a.Crash && !b.Crash {
 			return -1
 		} else if !a.Crash && b.Crash {
@@ -42,7 +43,6 @@ func seedCmp(ai interface{}, bi interface{}) int {
 }
 
 type seedPool struct {
-	inputMap  map[string]os.FileInfo
 	seeds     *redblacktree.Tree
 	corpusDir string
 }
@@ -56,7 +56,6 @@ func NewSeedPool(corpusDirName string, initialSeeds []entities.Testcase, evalDat
 	}
 	sp := &seedPool{
 		corpusDir: corpusDirName,
-		inputMap:  make(map[string]os.FileInfo, 0),
 		seeds:     redblacktree.NewWith(seedCmp),
 	}
 

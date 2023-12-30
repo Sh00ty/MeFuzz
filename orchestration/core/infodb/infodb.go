@@ -1,10 +1,11 @@
 package infodb
 
 import (
-	"github.com/pkg/errors"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"sync"
+
+	"github.com/pkg/errors"
 )
 
 type fuzzInfoDB struct {
@@ -64,19 +65,19 @@ func (db *fuzzInfoDB) AddFuzzer(f entities.Fuzzer) error {
 }
 
 // AddTestcases - сохраняет список тест-кейсов за раз
-func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities.Testcase, evalDataList []entities.EvaluatingData) {
+func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	for i := 0; i < len(idList); i++ {
-		fuzzer, exists := db.fuzzerMap[idList[i]]
+	for i := 0; i < len(tcList); i++ {
+		fuzzer, exists := db.fuzzerMap[tcList[i].FuzzerID]
 		if !exists {
-			logger.ErrorMessage("unknown fuzzer=%v of testcase, skip it", idList[i])
+			logger.ErrorMessage("unknown fuzzer=%v of testcase, skip it", tcList[i].FuzzerID)
 			continue
 		}
 
 		if _, exists := fuzzer.Testcases[tcList[i].ID]; exists {
-			logger.Debugf("test case with hash %s already exists", tcList[i].ID)
+			logger.Debugf("test case with hash %d already exists", tcList[i].ID)
 			continue
 		}
 
@@ -86,12 +87,12 @@ func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities
 			logger.Debug("useless testcase")
 			continue
 		}
-
 		if evalDataList[i].HasCrash {
 			fuzzer.BugsFound++
 		}
-
 		fuzzer.Testcases[tcList[i].ID] = struct{}{}
+
+		db.fuzzerMap[tcList[i].FuzzerID] = fuzzer
 
 		if err := db.seedPool.AddSeed(tcList[i], evalDataList[i]); err != nil {
 			logger.Errorf(err, "failed to add testcase to pool: %v", tcList[i])
@@ -103,6 +104,7 @@ func (db *fuzzInfoDB) AddTestcases(idList []entities.FuzzerID, tcList []entities
 func (db *fuzzInfoDB) DeleteFuzzer(id entities.FuzzerID) error {
 	db.mu.Lock()
 	if _, exists := db.fuzzerMap[id]; !exists {
+		db.mu.Unlock()
 		return errors.Errorf("fuzzer with id=%v doesn't exist", id)
 	}
 	delete(db.fuzzerMap, id)
@@ -128,17 +130,7 @@ func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 	return res
 }
 
-// Lock - блокирует все БД кроме покрытия
-func (db *fuzzInfoDB) Lock() {
-	db.mu.Lock()
-}
-
-// Unlock - снимает Lock()
-func (db *fuzzInfoDB) Unlock() {
-	db.mu.Unlock()
-}
-
-// GetCovData - возращает данные необходимые для проведения PCA (НЕ ПОТОКОБЕЗОПАСНО)
+// GetCovData - возращает данные необходимые для проведения PCA (НЕ ПОТОКОБЕЗОПАСНО для fuzzer map)
 func (db *fuzzInfoDB) GetCovData() (map[entities.FuzzerID]entities.Fuzzer, *CovData) {
 	return db.fuzzerMap, db.covData
 }

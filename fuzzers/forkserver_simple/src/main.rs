@@ -1,10 +1,16 @@
 use core::time::Duration;
+use std::borrow::BorrowMut;
+use std::process::ExitCode;
 use std::{io, os, thread};
 use std::path::PathBuf;
 use std::string;
 use std::sync::mpsc;
+use libafl::bolts::llmp;
+use libafl::bolts::tuples::Append;
+use libafl::executors;
 use tokio::net::{TcpListener, TcpStream};
-
+use serde::{Deserialize, Serialize};
+use rmp_serde;
 use clap::{self, Parser};
 use libafl::{bolts::{
     current_nanos,
@@ -18,7 +24,7 @@ use libafl::{bolts::{
 }, feedback_and_fast, feedback_or, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{Fuzzer, StdFuzzer}, HasFeedback, HasObjective, inputs::BytesInput, monitors::SimpleMonitor, mutators::{scheduled::havoc_mutations, tokens_mutations, StdScheduledMutator, Tokens}, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, stages::mutational::StdMutationalStage, state::{HasCorpus, HasMetadata, StdState}};
 use libafl::events::NopEventManager;
 use nix::sys::signal::Signal;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Error};
 
 /// The commandline args this fuzzer accepts
 #[derive(Debug, Parser)]
@@ -70,8 +76,8 @@ struct Opt {
 }
 
 struct EvalTask {
-    inp : BytesInput,
-    response: tokio::sync::oneshot::Sender<Vec<u8>>,
+    inp : Vec<BytesInput>,
+    response: tokio::sync::oneshot::Sender<Vec<EvalutionData>>,
 }
 
 
@@ -154,13 +160,27 @@ async fn main() {
             .build(tuple_list!(time_observer, edges_observer))
             .unwrap();
 
-        while let Some(evalTask) = consumer.blocking_recv() {
+        while let Some(tasks) = consumer.blocking_recv() {
             println!("got eval task");
-            let res = fuzzer.execute_input(&mut state, &mut executor, &mut mgr, &evalTask.inp);
-            dbg!(res.unwrap());
-            dbg!(executor.observers_mut().0.last_runtime());
-            let cov = executor.observers_mut().1.to_owned().0.to_vec();
-            let _= evalTask.response.send(cov);
+            let mut res_msg: Vec<EvalutionData> = Vec::new();
+            res_msg.reserve(tasks.inp.len());
+            
+            for eval_task in tasks.inp {
+                let exit_code = fuzzer.execute_input(&mut state, &mut executor, &mut mgr, &eval_task).unwrap();
+                let exec_info = match exit_code{
+                    executors::ExitKind::Ok => 1,
+                    executors::ExitKind::Crash => 2,
+                    executors::ExitKind::Oom => 4,
+                    executors::ExitKind::Timeout => 8,
+                    _ => unreachable!(),
+                };
+                let cov = executor.observers_mut().1.to_owned().0.to_vec();
+                res_msg.push(EvalutionData{
+                    coverage: cov,
+                    exec_info: ExecutionInfo(exec_info),
+                });
+            }
+            tasks.response.send(res_msg).unwrap();
         }
     });
 
@@ -176,30 +196,82 @@ async fn main() {
 
 
 async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<EvalTask>) {
+    loop{
+        let testcases_bytes = recv_tcp_msg(&mut socket).await.expect("failed to get tcp message");
+        
+        let mut testcases: Input = rmp_serde::from_slice(&testcases_bytes).expect("failed to unmarshal testcases");
+        
+        let (resp_tx, resp_rx)= tokio::sync::oneshot::channel();
+        
+        let inputs = testcases.testcases.iter_mut().map(|x| BytesInput::from(x.input.clone())).collect();
+        let msg = EvalTask{
+            inp: inputs,
+            response: resp_tx,
+        };
+        msg_producer.send(msg).await.unwrap();
 
-    let buffer = String::from("ba");
-    let (resp_tx, resp_rx)= tokio::sync::oneshot::channel();
-    println!("send eval task");
-    let _ = msg_producer.send(EvalTask{
-        inp: BytesInput::new(buffer.into_bytes()),
-        response: resp_tx,
-    }).await;
-
-    let res= resp_rx.await;
-    let cov = match res {
-        Ok(v)=> v,
-        _ => {
-            dbg!("failed to get cov from resp_rx");
-            vec![]
-        },
-    };
-    let mut s = 0;
-    for i in 1..cov.len() {
-        if cov[i] > 0 {
-            s += 1;
-            print!("{i} ");
-        }
+        let res= resp_rx.await.unwrap();
+        
+        send_tcp_msg(&mut socket, &Output{
+            eval_data: res,
+        }).await.expect("failed to send results over tcp");
     }
-    println!("\nsum={s}");
-    socket.shutdown().await.unwrap();
+}
+
+
+async fn recv_tcp_msg(stream: &mut TcpStream) -> Result<Vec<u8>, tokio::io::Error> {
+    // Always receive one be u32 of size, then the command.
+
+    let mut size_bytes = [0_u8; 4];
+    stream.read_exact(&mut size_bytes).await?;
+    let size = u32::from_be_bytes(size_bytes);
+    let mut bytes = vec![];
+    bytes.resize(size as usize, 0_u8);
+
+    stream.read_exact(&mut bytes).await?;
+
+    Ok(bytes)
+}
+
+async fn send_tcp_msg<T>(stream: &mut TcpStream, msg: &T) -> Result<(), tokio::io::Error>
+where
+    T: Serialize,
+{
+    let msg = rmp_serde::to_vec(msg).expect("failed to serialize message");
+    let size_bytes = (msg.len() as u32).to_be_bytes();
+    stream.write_all(&size_bytes).await?;
+    stream.write_all(&msg).await?;
+    Ok(())
+}
+
+/// information about execution on evaler such as exit code, is asan, is msan etc.
+#[repr(transparent)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+pub struct ExecutionInfo(pub u64);
+
+ /// Send code coverage from evaler to master
+ #[derive(Serialize, Deserialize, Debug, Clone)]
+ struct EvalutionData {
+    /// execution information such as exit code or is
+    exec_info: ExecutionInfo,
+    /// code coverage collected from evaler
+    coverage: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Testcase {
+    input: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Input {
+    testcases: Vec<Testcase>
+}
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Output {
+    eval_data: Vec<EvalutionData>
 }

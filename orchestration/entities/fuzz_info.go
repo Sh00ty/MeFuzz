@@ -70,6 +70,7 @@ type FuzzerInformation interface {
 
 type Testcase struct {
 	ID         uint64
+	FuzzerID   FuzzerID
 	InputData  []byte
 	Execs      uint32
 	CorpusSize uint32
@@ -108,14 +109,8 @@ type EvaluatingData struct {
 
 type Coverage [CovSize]byte
 
-func (cov Coverage) Add(newCov []int16) {
-	minLen := 0
-	if len(cov) < len(newCov) {
-		minLen = len(cov)
-	} else {
-		minLen = len(newCov)
-	}
-	for i := 0; i < minLen; i++ {
+func (cov Coverage) Add(newCov Coverage) {
+	for i := 0; i < CovSize; i++ {
 		cov[i] += byte(newCov[i])
 	}
 }

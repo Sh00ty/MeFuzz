@@ -1,13 +1,15 @@
 package infodb
 
 import (
-	"github.com/pkg/errors"
-	"gonum.org/v1/gonum/spatial/vptree"
 	"math"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
+	"golang.org/x/exp/rand"
+	"gonum.org/v1/gonum/spatial/vptree"
 )
 
 const (
@@ -44,8 +46,8 @@ func NewCovData() *CovData {
 	}
 }
 
+// Под бдшным мьютексом
 func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
-	d.mu.Lock()
 	d.Fuzzers[fuzzConfKey{
 		FuzzerID: fuzzer.ID,
 		Config:   fuzzer.Configuration,
@@ -54,18 +56,16 @@ func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
 		TestcaseCount: [entities.CovSize]uint{},
 		mu:            &sync.Mutex{},
 	}
-	d.mu.Unlock()
 }
 
+// Под бдшным мьютексом
 func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) {
 	key := fuzzConfKey{
 		FuzzerID: fuzzerID,
 		Config:   conf,
 	}
 
-	d.mu.Lock()
 	if _, exists := d.Fuzzers[key]; exists {
-		d.mu.Unlock()
 		return
 	}
 	d.Fuzzers[key] = &Fuzzer{
@@ -73,7 +73,6 @@ func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.F
 		TestcaseCount: [entities.CovSize]uint{},
 		mu:            &sync.Mutex{},
 	}
-	d.mu.Unlock()
 }
 
 func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entities.FuzzerConf, cov entities.Coverage) {
@@ -81,11 +80,7 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 		FuzzerID: fuzzerID,
 		Config:   config,
 	}
-
-	d.mu.Lock()
 	fuzzer, exists := d.Fuzzers[key]
-	d.mu.Unlock()
-
 	if !exists {
 		logger.ErrorMessage("not found fuzzer with id=%v and conf=%v", fuzzerID, config)
 		return
@@ -94,6 +89,8 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 	fuzzer.mu.Lock()
 	for j, tr := range cov {
 		if tr != 0 {
+			// кажется из-за наложенния и циклов идея
+			// хотя бы не невалиданая
 			fuzzer.TestcaseCount[j]++
 			fuzzer.Cov[j] += float64(tr)
 		}
@@ -159,26 +156,26 @@ func (d *CovData) UpdateDistances() (err error) {
 			cov[i] = fuzzer.Cov[i] / math.Max(float64(fuzzer.TestcaseCount[i]), 1)
 			sqNorm += cov[i] * cov[i]
 		}
-		vf := vpfuzzer{
+		vp := vpfuzzer{
 			Key:      key,
 			Coverage: cov,
 		}
-
-		fuzzer.vpFuzzer = &vf
+		fuzzer.vpFuzzer = &vp
 		fuzzer.PrevSqNorm = fuzzer.SqNorm
 		fuzzer.SqNorm = sqNorm
+
 		fuzzer.mu.Unlock()
 
 		d.Fuzzers[key] = fuzzer
-		vpFuzzers = append(vpFuzzers, &vf)
+		vpFuzzers = append(vpFuzzers, &vp)
 	}
-	d.Vptree, err = vptree.New(vpFuzzers, 3, nil)
-	if err != nil {
-		d.mu.Unlock()
-		return errors.Wrap(err, "failed to build vptree")
-	}
+	d.Vptree, err = vptree.New(vpFuzzers, len(d.Fuzzers), rand.NewSource(uint64(time.Now().Unix())))
 	d.LastUpdate = time.Now()
 	d.mu.Unlock()
+
+	if err != nil {
+		return errors.Wrap(err, "failed to build vptree")
+	}
 	return nil
 }
 

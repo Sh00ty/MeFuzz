@@ -1,30 +1,24 @@
-use core::time::Duration;
-use std::borrow::BorrowMut;
-use std::process::ExitCode;
-use std::{io, os, thread};
-use std::path::PathBuf;
-use std::string;
-use std::sync::mpsc;
-use libafl::bolts::llmp;
-use libafl::bolts::tuples::Append;
+use std::{thread, time::Duration};
 use libafl::executors;
-use tokio::net::{TcpListener, TcpStream};
+use num_cpus;
+use tokio::{net::TcpStream, sync::{oneshot, mpsc}};
 use serde::{Deserialize, Serialize};
 use rmp_serde;
 use clap::{self, Parser};
 use libafl::{bolts::{
+    compress::GzipCompressor,
     current_nanos,
     rands::StdRand,
     shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-    tuples::{tuple_list},
+    tuples::tuple_list,
     AsMutSlice,
-}, corpus::{InMemoryCorpus}, executors::{
-    forkserver::{ForkserverExecutor},
+}, corpus::InMemoryCorpus, executors::{
+    forkserver::ForkserverExecutor,
     HasObservers,
-}, feedback_and_fast, feedback_or, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{Fuzzer, StdFuzzer}, HasFeedback, HasObjective, inputs::BytesInput, monitors::SimpleMonitor, mutators::{scheduled::havoc_mutations, tokens_mutations, StdScheduledMutator, Tokens}, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, stages::mutational::StdMutationalStage, state::{HasCorpus, HasMetadata, StdState}};
+}, feedback_and_fast, feedback_or, feedbacks::{MaxMapFeedback, TimeFeedback}, fuzzer::StdFuzzer, inputs::BytesInput, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, state::StdState};
 use libafl::events::NopEventManager;
 use nix::sys::signal::Signal;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Error};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The commandline args this fuzzer accepts
 #[derive(Debug, Parser)]
@@ -84,9 +78,14 @@ struct EvalTask {
 #[allow(clippy::similar_names)]
 #[tokio::main]
 async fn main() {
+    let mut socket = TcpStream::connect("127.0.0.1:9090").await.unwrap();
+    let compressor =  GzipCompressor::new(1024);
+    let cpus = num_cpus::get_physical();
+    send_tcp_msg(&mut socket, &Cores{cores: cpus}, &compressor).await.expect("failed to send cpus count to master");
+    println!("connected to {:#?}", socket.peer_addr());
+
     // сюда лучше сделать что-то типо avg conn or max os threads
     let (producer,mut consumer) = tokio::sync::mpsc::channel::<EvalTask>(10);
-
 
     let _= thread::spawn(move ||{
         const MAP_SIZE: usize = 65536;
@@ -184,26 +183,34 @@ async fn main() {
         }
     });
 
-    println!("start listen on 9090");
-    let listener = TcpListener::bind("127.0.0.1:9090").await.unwrap();
-    loop {
-        let (socket, _) = listener.accept().await.unwrap();
-        println!("got incoming connection");
-        process(socket, producer.clone()).await;
-    }
+    process(socket, producer, compressor).await;
 
+    tokio::time::sleep(Duration::from_secs(20)).await;
 }
 
-
-async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<EvalTask>) {
+async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<EvalTask>, compressor: GzipCompressor) {
     loop{
-        let testcases_bytes = recv_tcp_msg(&mut socket).await.expect("failed to get tcp message");
+        let testcases_bytes_compressed = match recv_tcp_msg(&mut socket).await {
+            Ok(testcases_bytes_compressed) => testcases_bytes_compressed,
+            Err(e) => {
+                println!("failed to read message, close tcp stream: {}", e);
+                let _= socket.shutdown().await;
+                return;
+            }
+        };
         
-        let mut testcases: Input = rmp_serde::from_slice(&testcases_bytes).expect("failed to unmarshal testcases");
-        
+        let testcases_bytes = compressor.decompress(&testcases_bytes_compressed).expect("failed to decompress testcases");
+
+        let mut testcases: Input = match rmp_serde::from_slice(&testcases_bytes){
+            Ok(testcases) => testcases,
+            Err(e) => {
+                println!("failed to unmarshal testcases: {}", e);
+                continue;
+            }
+        };
         let (resp_tx, resp_rx)= tokio::sync::oneshot::channel();
         
-        let inputs = testcases.testcases.iter_mut().map(|x| BytesInput::from(x.input.clone())).collect();
+        let inputs = testcases.testcases.iter_mut().map(|x| BytesInput::from(x.as_slice())).collect();
         let msg = EvalTask{
             inp: inputs,
             response: resp_tx,
@@ -211,10 +218,14 @@ async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<
         msg_producer.send(msg).await.unwrap();
 
         let res= resp_rx.await.unwrap();
-        
-        send_tcp_msg(&mut socket, &Output{
-            eval_data: res,
-        }).await.expect("failed to send results over tcp");
+
+        send_tcp_msg(
+            &mut socket, 
+            &Output{
+                eval_data: res,
+            },
+            &compressor,
+        ).await.expect("failed to send results over tcp");
     }
 }
 
@@ -233,16 +244,27 @@ async fn recv_tcp_msg(stream: &mut TcpStream) -> Result<Vec<u8>, tokio::io::Erro
     Ok(bytes)
 }
 
-async fn send_tcp_msg<T>(stream: &mut TcpStream, msg: &T) -> Result<(), tokio::io::Error>
+async fn send_tcp_msg<T>(stream: &mut TcpStream, msg: &T, compressor: &GzipCompressor) -> Result<(), tokio::io::Error>
 where
     T: Serialize,
 {
     let msg = rmp_serde::to_vec(msg).expect("failed to serialize message");
-    let size_bytes = (msg.len() as u32).to_be_bytes();
+    let msg_compressed = match compressor.compress(&msg).expect("failed to compress message") {
+        Some(msg_compressed) => msg_compressed,
+        None => msg,
+    };
+
+    let size_bytes = (msg_compressed.len() as u32).to_be_bytes();
     stream.write_all(&size_bytes).await?;
-    stream.write_all(&msg).await?;
+    stream.write_all(&msg_compressed).await?;
     Ok(())
 }
+
+struct ElementStream<T> {
+    stream: TcpStream,
+    recv: mpsc::Receiver<T>,
+    send: mpsc::Sender<T>,
+} 
 
 /// information about execution on evaler such as exit code, is asan, is msan etc.
 #[repr(transparent)]
@@ -267,11 +289,21 @@ struct Testcase {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Input {
-    testcases: Vec<Testcase>
+    testcases :Vec<Vec<u8>>
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Output {
     eval_data: Vec<EvalutionData>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Cores{
+    pub cores: usize
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct MasterMessage {
+    pub on_node_id: u16,
+    pub payload: Vec<u8>,
 }

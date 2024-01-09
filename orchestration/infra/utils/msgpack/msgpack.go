@@ -2,12 +2,13 @@ package msgpack
 
 import (
 	"bytes"
+	"io"
+
 	"github.com/pkg/errors"
 	"github.com/vmihailenco/msgpack/v5"
-	"io"
 )
 
-type namer interface {
+type Namer interface {
 	Name() string
 }
 
@@ -22,6 +23,8 @@ func New() Converter {
 	enc.UseCompactFloats(true)
 	enc.UseCompactInts(true)
 	enc.UseArrayEncodedStructs(true)
+	enc.UseInternedStrings(true)
+	enc.SetOmitEmpty(true)
 	return Converter{
 		buf:     &buf,
 		encoder: enc,
@@ -35,18 +38,22 @@ func (c Converter) Marshal(v interface{}) ([]byte, error) {
 	return io.ReadAll(c.buf)
 }
 
-func (c Converter) MarshalEnum(n namer) ([]byte, error) {
+func (c Converter) MarshalEnum(n Namer) ([]byte, error) {
 	if err := c.encoder.Encode(map[string]interface{}{n.Name(): n}); err != nil {
 		return nil, err
 	}
 	return io.ReadAll(c.buf)
 }
 
+func (c Converter) Unmarshal(data []byte, v interface{}) error {
+	return msgpack.Unmarshal(data, v)
+}
+
 func Unmarshal(data []byte, v interface{}) error {
 	return msgpack.Unmarshal(data, v)
 }
 
-func UnmarshalEnum[T namer](data []byte, n *T) error {
+func UnmarshalEnum[T Namer](data []byte, n *T) error {
 	m := make(map[string]T, 1)
 	if err := msgpack.Unmarshal(data, &m); err != nil {
 		return err
@@ -58,7 +65,7 @@ func UnmarshalEnum[T namer](data []byte, n *T) error {
 	return errors.Errorf("doesn't exists feild=%s", (*n).Name())
 }
 
-func CovertTo[T byte | int | int16 | int64 | int32, V byte | int | int16 | int64 | int32](data []T) []V {
+func CovertTo[T byte | int | int16 | int64 | int32 | uint32, V byte | int | int16 | int64 | int32 | uint32](data []T) []V {
 	res := make([]V, len(data))
 	for i := range data {
 		res[i] = V(data[i])

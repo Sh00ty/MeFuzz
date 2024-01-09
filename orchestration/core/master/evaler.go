@@ -1,7 +1,7 @@
-package monitoring
+package master
 
 import (
-	"orchestration/core/master"
+	"context"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"time"
@@ -12,12 +12,9 @@ type evalClnt interface {
 	Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingData, error)
 }
 
-type fuzzInfoDB interface {
-	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
-}
-
 const (
 	evalRetryCount = 1
+	saveTimeout    = 5 * time.Minute
 	bufferMaxSize  = 128
 )
 
@@ -26,24 +23,22 @@ const (
 // еще таким образом удобно вводить/выводить оценщика
 // также выглядит как здравая балансировка
 type Worker struct {
+	cancel context.CancelFunc
+
 	newTestcasesChan <-chan entities.Testcase
-	closeChan        chan struct{}
-	performanceChan  chan<- master.Event
+	performanceChan  chan<- Event
 
 	evaler evalClnt
 	db     fuzzInfoDB
 
 	tcBuf []entities.Testcase
-
-	saveTimeout time.Duration
 }
 
-func New(
+func newWorker(
 	newTestcasesChan <-chan entities.Testcase,
-	performanceChan chan<- master.Event,
+	performanceChan chan<- Event,
 	db fuzzInfoDB,
 	evaler evalClnt,
-	saveTimeout time.Duration,
 ) *Worker {
 	if bufferMaxSize < 1 {
 		panic("buffer size must be greater then 0")
@@ -53,20 +48,19 @@ func New(
 		performanceChan:  performanceChan,
 		db:               db,
 		evaler:           evaler,
-		closeChan:        make(chan struct{}),
 		tcBuf:            make([]entities.Testcase, 0, bufferMaxSize),
-		saveTimeout:      saveTimeout,
 	}
 }
 
-// Run -. (запускать в отдельной горутине)
-func (w *Worker) Run() {
-	ticker := time.NewTicker(w.saveTimeout)
+func (w *Worker) Run(ctx context.Context) {
+	ctx, w.cancel = context.WithCancel(ctx)
+
+	ticker := time.NewTicker(saveTimeout)
 	for {
 		select {
 		case <-ticker.C:
-			w.performanceChan <- master.Event{
-				Event: master.NeedMoreFuzzers,
+			w.performanceChan <- Event{
+				Event: NeedMoreFuzzers,
 			}
 			w.flush()
 		case testcase := <-w.newTestcasesChan:
@@ -74,21 +68,20 @@ func (w *Worker) Run() {
 			if uint(len(w.tcBuf)) == bufferMaxSize {
 				w.flush()
 			}
-		case <-w.closeChan:
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
 func (w *Worker) Close() {
-	close(w.closeChan)
+	w.cancel()
 }
 
 func (w *Worker) flush() {
 	if len(w.tcBuf) == 0 {
 		return
 	}
-
 	for i := 0; i < evalRetryCount+1; i++ {
 		evalData, err := w.evaler.Evaluate(w.tcBuf)
 		if err != nil {

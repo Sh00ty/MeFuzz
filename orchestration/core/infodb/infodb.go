@@ -4,9 +4,18 @@ import (
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 )
+
+type Fuzzer struct {
+	ID            entities.ElementID
+	Configuration entities.FuzzerConf
+	BugsFound     uint
+	Registered    time.Time
+	Testcases     map[uint64]struct{}
+}
 
 type fuzzInfoDB struct {
 	// сохраняем тест-кейсы для общей картины
@@ -17,9 +26,9 @@ type fuzzInfoDB struct {
 
 	mu *sync.RWMutex
 	// все зарегистрированные фаззеры
-	fuzzerMap map[entities.FuzzerID]entities.Fuzzer
+	fuzzerMap map[entities.ElementID]Fuzzer
 	// фаззеры плохо проявиших себя в предыдущих раундах
-	toChangeConf map[entities.FuzzerID]struct{}
+	toChangeConf map[entities.ElementID]struct{}
 	// информация необходимая для оценки схожести покрытий
 	covData *CovData
 }
@@ -34,14 +43,14 @@ func New(corpusDirName string) (*fuzzInfoDB, error) {
 		mu:           &sync.RWMutex{},
 		generalCovMu: &sync.Mutex{},
 		seedPool:     pool,
-		fuzzerMap:    make(map[entities.FuzzerID]entities.Fuzzer, 0),
-		toChangeConf: make(map[entities.FuzzerID]struct{}),
+		fuzzerMap:    make(map[entities.ElementID]Fuzzer, 0),
+		toChangeConf: make(map[entities.ElementID]struct{}),
 		covData:      NewCovData(),
 	}, nil
 }
 
 // ChangeConfig - сохраняет новый конфиг для фаззера
-func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) error {
+func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.ElementID, conf entities.FuzzerConf) error {
 	db.mu.Lock()
 	fuzzer := db.fuzzerMap[fuzzerID]
 	fuzzer.Configuration = conf
@@ -53,7 +62,7 @@ func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.FuzzerID, conf entities.Fuz
 }
 
 // AddFuzzer - добавляет новый фаззер и начинает собирать по нему информацию
-func (db *fuzzInfoDB) AddFuzzer(f entities.Fuzzer) error {
+func (db *fuzzInfoDB) AddFuzzer(f Fuzzer) error {
 	db.mu.Lock()
 	if _, exists := db.fuzzerMap[f.ID]; exists {
 		return errors.Errorf("fuzzer with id=%v already exists", f.ID)
@@ -101,7 +110,7 @@ func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []en
 }
 
 // DeleteFuzzer - удаляет фаззер
-func (db *fuzzInfoDB) DeleteFuzzer(id entities.FuzzerID) error {
+func (db *fuzzInfoDB) DeleteFuzzer(id entities.ElementID) error {
 	db.mu.Lock()
 	if _, exists := db.fuzzerMap[id]; !exists {
 		db.mu.Unlock()
@@ -131,6 +140,6 @@ func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 }
 
 // GetCovData - возращает данные необходимые для проведения PCA (НЕ ПОТОКОБЕЗОПАСНО для fuzzer map)
-func (db *fuzzInfoDB) GetCovData() (map[entities.FuzzerID]entities.Fuzzer, *CovData) {
+func (db *fuzzInfoDB) GetCovData() (map[entities.ElementID]Fuzzer, *CovData) {
 	return db.fuzzerMap, db.covData
 }

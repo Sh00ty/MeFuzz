@@ -54,6 +54,6 @@ func Errorf(err error, message string, args ...interface{}) {
 	log.Error().Stack().Err(err).Msgf(message, args...)
 }
 
-func Fataf(message string, args ...interface{}) {
+func Fatalf(message string, args ...interface{}) {
 	log.Fatal().Caller().Msgf(message, args...)
 }

@@ -5,25 +5,30 @@ import (
 	"time"
 )
 
-type ClientID uint
-type NodeID uint64
-type NodeType int8
+type (
+	OnNodeID    uint16
+	NodeID      uint32
+	ElementType int8
+)
 
 const (
-	Undefined NodeType = iota
+	Undefined ElementType = iota
+	// с брокером хотя бы один фаззер точно поднимается
 	Broker
+	Fuzzer
 	Evaler
 )
 
-type FuzzInfoKind uint8
+type Flags uint8
 
 const (
-	Compressed FuzzInfoKind = 1 << iota
+	Compressed Flags = 1 << iota
 	_
 	Master
 	NewTestCase
 	_
 	Configuration
+	Evaluation
 )
 
 const (
@@ -32,53 +37,32 @@ const (
 )
 
 var (
-	MasterFuzzerID = FuzzerID{
-		ClientID: math.MaxInt16,
-		NodeID:   math.MaxInt16,
+	MasterFuzzerID = ElementID{
+		NodeID:   0,
+		OnNodeID: math.MaxUint16,
 	}
 )
 
-func (f FuzzInfoKind) Has(flag FuzzInfoKind) bool {
+func (f Flags) Has(flag Flags) bool {
 	return flag == f&flag
 }
 
-func (f FuzzInfoKind) Add(flag FuzzInfoKind) FuzzInfoKind {
+func (f Flags) Add(flag Flags) Flags {
 	return f | flag
 }
 
-type FuzzerID struct {
-	ClientID ClientID
+type ElementID struct {
 	NodeID   NodeID
-}
-
-type Fuzzer struct {
-	ID            FuzzerID
-	Configuration FuzzerConf
-	BugsFound     uint
-	Registered    time.Time
-	Testcases     map[uint64]struct{}
-}
-
-type FuzzerMessage struct {
-	From FuzzerID
-	Info FuzzerInformation
-}
-
-type FuzzerInformation interface {
-	Kind() FuzzInfoKind
+	OnNodeID OnNodeID
 }
 
 type Testcase struct {
 	ID         uint64
-	FuzzerID   FuzzerID
+	FuzzerID   ElementID
 	InputData  []byte
 	Execs      uint32
 	CorpusSize uint32
 	CreatedAt  time.Time
-}
-
-func (Testcase) Kind() FuzzInfoKind {
-	return NewTestCase
 }
 
 type (
@@ -97,10 +81,6 @@ type FuzzerConf struct {
 	ForkMode   bool
 }
 
-func (FuzzerConf) Kind() FuzzInfoKind {
-	return Configuration
-}
-
 type EvaluatingData struct {
 	Cov      Coverage
 	HasCrash bool
@@ -108,9 +88,3 @@ type EvaluatingData struct {
 }
 
 type Coverage [CovSize]byte
-
-func (cov Coverage) Add(newCov Coverage) {
-	for i := 0; i < CovSize; i++ {
-		cov[i] += byte(newCov[i])
-	}
-}

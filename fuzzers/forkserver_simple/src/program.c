@@ -23,14 +23,21 @@ int main(int argc, char **argv) {
   // The following line is also needed for shared memory testcase fuzzing
   unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
 
-  printf("input: %s\n", buf);
-  if (buf[0] == 'b') {
-      if (buf[1] == 'a') {
-          if (buf[2] == 'd') { abort(); }
-      }
+  for (int i = 0; i < 16; i++){
+    printf("input: %s\n", buf);
+    if (buf[0] == 'b') {
+        if (buf[1] == 'a') {
+            if (buf[2] == 'd') { abort(); }
+        }
+    }
   }
 
   vuln(buf);
+
+  if (buf[0] == 's') {
+    int* a = NULL;
+    print(*a);
+  }
 
   return 0;
 }

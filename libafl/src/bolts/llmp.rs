@@ -2061,6 +2061,14 @@ where
         }
     }
 
+    // TODO: тут делаем чтобы брокер читал канал а не tcp соединение
+    // забудем пока что, что там вообще что-то лежит
+    // это на себя кажется возьмет tokio
+    // #[cfg(feature = "std")]
+    // pub fn create_attach_to_channel(shmem_provider: SP) -> Result<Self, Error> {
+    //     let mut broker = LlmpBroker::new(shmem_provider)?;
+    // }
+
     /// Set this broker to exit after at least `count` clients attached and all client exited.
     /// Will ignore the own listener thread, if `create_attach_to_tcp`
     ///

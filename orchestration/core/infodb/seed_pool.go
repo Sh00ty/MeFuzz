@@ -17,7 +17,7 @@ type seed struct {
 	Crash     bool
 	NewCov    uint
 	CreatedAt time.Time
-	FuzzerID  entities.FuzzerID
+	FuzzerID  entities.ElementID
 }
 
 func seedCmp(ai interface{}, bi interface{}) int {

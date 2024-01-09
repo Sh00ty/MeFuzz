@@ -24,7 +24,7 @@ type CovData struct {
 	// сделано для того чтобы смотреть статистику именно по конфигурациям
 	// но одинаковые конфигурации на разных машинах пока что разные тут фаззеры
 	// тк они в теории могут давать достаточно разносторонее покрытие
-	Fuzzers map[fuzzConfKey]*Fuzzer
+	Fuzzers map[fuzzConfKey]*fuzzer
 	// необходимо быстро находить ближайшего по расстоянию покрытия соседа
 	// дерево позволяющее делать быстрые запросы на ближайших соседей
 	Vptree *vptree.Tree
@@ -35,23 +35,23 @@ type CovData struct {
 // fuzzConfKey - однозначно идентифицирует фаззер в расчете на длительный период
 // (у фаззера может поменяться конфигурация)
 type fuzzConfKey struct {
-	FuzzerID entities.FuzzerID
+	FuzzerID entities.ElementID
 	Config   entities.FuzzerConf
 }
 
 func NewCovData() *CovData {
 	return &CovData{
-		Fuzzers:    make(map[fuzzConfKey]*Fuzzer, 0),
+		Fuzzers:    make(map[fuzzConfKey]*fuzzer, 0),
 		LastUpdate: time.Now(),
 	}
 }
 
 // Под бдшным мьютексом
-func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
+func (d *CovData) AddFuzzer(f Fuzzer) {
 	d.Fuzzers[fuzzConfKey{
-		FuzzerID: fuzzer.ID,
-		Config:   fuzzer.Configuration,
-	}] = &Fuzzer{
+		FuzzerID: f.ID,
+		Config:   f.Configuration,
+	}] = &fuzzer{
 		Cov:           [entities.CovSize]float64{},
 		TestcaseCount: [entities.CovSize]uint{},
 		mu:            &sync.Mutex{},
@@ -59,7 +59,7 @@ func (d *CovData) AddFuzzer(fuzzer entities.Fuzzer) {
 }
 
 // Под бдшным мьютексом
-func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.FuzzerConf) {
+func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.ElementID, conf entities.FuzzerConf) {
 	key := fuzzConfKey{
 		FuzzerID: fuzzerID,
 		Config:   conf,
@@ -68,14 +68,14 @@ func (d *CovData) ChangeFuzzerConfig(fuzzerID entities.FuzzerID, conf entities.F
 	if _, exists := d.Fuzzers[key]; exists {
 		return
 	}
-	d.Fuzzers[key] = &Fuzzer{
+	d.Fuzzers[key] = &fuzzer{
 		Cov:           [entities.CovSize]float64{},
 		TestcaseCount: [entities.CovSize]uint{},
 		mu:            &sync.Mutex{},
 	}
 }
 
-func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entities.FuzzerConf, cov entities.Coverage) {
+func (d *CovData) AddTestcaseCoverage(fuzzerID entities.ElementID, config entities.FuzzerConf, cov entities.Coverage) {
 	key := fuzzConfKey{
 		FuzzerID: fuzzerID,
 		Config:   config,
@@ -100,7 +100,7 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.FuzzerID, config entitie
 	logger.Debugf("added coverage for fuzzerID %v and conf %v", fuzzerID, config)
 }
 
-type Fuzzer struct {
+type fuzzer struct {
 	mu *sync.Mutex
 	// оригинальное покрытие за весь процесс фаззинга
 	Cov [entities.CovSize]float64

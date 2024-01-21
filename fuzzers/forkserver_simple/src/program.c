@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
 
   if (buf[0] == 's') {
     int* a = NULL;
-    print(*a);
+    printf("%d", *a);
   }
 
   return 0;

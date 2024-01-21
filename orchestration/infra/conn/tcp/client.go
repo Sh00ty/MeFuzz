@@ -38,7 +38,7 @@ type (
 		ClientID entities.OnNodeID
 	}
 
-	OnConnect func(ctx context.Context, conn Connection, recvMsgChan chan entities.Testcase) error
+	OnConnect func(ctx context.Context, conn connection, recvMsgChan chan entities.Testcase) error
 	Handler   func(ctx context.Context, recvMsgChan chan entities.Testcase, msg HandlerMessage) error
 )
 
@@ -48,7 +48,7 @@ type Client struct {
 
 	mu sync.RWMutex
 	// храним для каждой ноды соединение с ней
-	connMap     map[entities.NodeID]Connection
+	connMap     map[entities.NodeID]connection
 	sendChanMap map[entities.NodeID]chan<- entities.Testcase
 
 	// в этот канал присылаются все сообщений со всех нод
@@ -66,7 +66,7 @@ func NewTcpClient(
 		h:         handler,
 		onConnect: onConnect,
 
-		connMap:     make(map[entities.NodeID]Connection, ExpectedNodesNumber),
+		connMap:     make(map[entities.NodeID]connection, ExpectedNodesNumber),
 		sendChanMap: make(map[entities.NodeID]chan<- entities.Testcase, ExpectedNodesNumber),
 
 		recvMsgChan:          make(chan entities.Testcase, ExpectedNodesNumber*RecvLimit),
@@ -74,7 +74,7 @@ func NewTcpClient(
 	}
 }
 
-func (c *Client) clearConnection(conn Connection) {
+func (c *Client) clearConnection(conn connection) {
 	c.mu.Lock()
 	delete(c.connMap, conn.NodeID)
 	delete(c.sendChanMap, conn.NodeID)
@@ -141,7 +141,7 @@ func (c *Client) GetRecvMessageChan() <-chan entities.Testcase {
 	return c.recvMsgChan
 }
 
-func (c *Client) Handle(ctx context.Context, conn Connection, input <-chan entities.Testcase) {
+func (c *Client) Handle(ctx context.Context, conn connection, input <-chan entities.Testcase) {
 	defer c.clearConnection(conn)
 
 	converter := msgpack.New()

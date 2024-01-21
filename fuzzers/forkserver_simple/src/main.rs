@@ -1,11 +1,12 @@
-use std::{thread, time::Duration};
-use libafl::executors;
+use std::{thread::{self}, time::Duration, ops::{BitOr, BitAnd}, path::PathBuf, str::FromStr};
+use libafl::{executors, bolts::{llmp::{Flags, LLMP_FLAG_COMPRESSED, LLMP_FLAG_B2M, LLMP_FLAG_EVALUATION, self}, os::{fork, self}}, FuzzerConfiguration};
 use num_cpus;
-use tokio::{net::TcpStream, sync::{oneshot, mpsc}};
+use tokio::{net::TcpStream, sync::{oneshot, mpsc}, time::sleep};
 use serde::{Deserialize, Serialize};
 use rmp_serde;
 use clap::{self, Parser};
 use libafl::{bolts::{
+    ClientId,
     compress::GzipCompressor,
     current_nanos,
     rands::StdRand,
@@ -17,8 +18,10 @@ use libafl::{bolts::{
     HasObservers,
 }, feedback_and_fast, feedback_or, feedbacks::{MaxMapFeedback, TimeFeedback}, fuzzer::StdFuzzer, inputs::BytesInput, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, state::StdState};
 use libafl::events::NopEventManager;
-use nix::sys::signal::Signal;
+use nix::{sys::signal::Signal, libc::time};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::collections::HashMap;
+use libfuzzer_libpng;
 
 /// The commandline args this fuzzer accepts
 #[derive(Debug, Parser)]
@@ -74,17 +77,117 @@ struct EvalTask {
     response: tokio::sync::oneshot::Sender<Vec<EvalutionData>>,
 }
 
+const GZIP_THRESHOLD:usize= 1024;
+const FUZZER: i64 = 2;
+const EVALER: i64 = 3;
 
 #[allow(clippy::similar_names)]
 #[tokio::main]
 async fn main() {
-    let mut socket = TcpStream::connect("127.0.0.1:9090").await.unwrap();
-    let compressor =  GzipCompressor::new(1024);
+    let mut stream = TcpStream::connect("127.0.0.1:9090").await.unwrap();
+    
     let cpus = num_cpus::get_physical();
-    send_tcp_msg(&mut socket, &Cores{cores: cpus}, &compressor).await.expect("failed to send cpus count to master");
-    println!("connected to {:#?}", socket.peer_addr());
+    let cpus_msg = rmp_serde::to_vec(&Cores{cores:cpus}).expect("failed to serialize cpus");
+    send_tcp_msg(&mut stream, cpus_msg).await.expect("failed to send cpus count to master");
 
-    // сюда лучше сделать что-то типо avg conn or max os threads
+    let conf_msg_bytes = recv_tcp_msg(&mut stream).await.expect("failed to recv configuration");
+    println!("connected to {:#?}", stream.peer_addr());
+    
+    let conf:NodeConfiguration = rmp_serde::from_slice(&conf_msg_bytes).expect("failed to deserialize node configuration");
+    println!("got configurations {:#?}", conf);
+
+    let mut multeplex_tx_map: HashMap<ClientId, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let mut multeplex_rx_map: HashMap<ClientId, mpsc::Receiver<Vec<u8>>> = HashMap::new();
+    for i in 0..conf.elements.len() {
+        let (tx, rx) = mpsc::channel(10);
+        multeplex_tx_map.insert(ClientId(conf.elements[i].on_node_id), tx);
+        multeplex_rx_map.insert(ClientId(conf.elements[i].on_node_id), rx);
+    }
+
+    let (rstream,mut  wstream) = stream.into_split();
+    let multiplexer = Multiplexer::new(rstream, multeplex_tx_map);
+    
+    tokio::spawn(async move {
+        multiplexer.handle_connection(GzipCompressor::new(GZIP_THRESHOLD)).await;
+    });
+
+    let (sendtx, mut sendrx) = mpsc::channel::<llmp::TcpMasterMessage>(10);
+
+    tokio::spawn(async move {
+        loop {
+            let compressor = GzipCompressor::new(1024);
+            let msg = sendrx.recv().await.unwrap();
+            
+            match Multiplexer::send_msg(&mut wstream, &compressor, msg.payload, msg.client_id.0, msg.flags).await {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("failed to send multiplexed message {}", e);
+                }
+            };
+        }
+    });
+
+    for el in conf.elements.into_iter(){
+        let rx = multeplex_rx_map.remove(&ClientId(el.on_node_id)).unwrap();
+        let on_node_id = el.on_node_id;
+        let es = ElementStream{
+            recv: rx,
+            stream: sendtx.clone(),
+        };
+        
+        match el.kind {
+            FUZZER => {
+                // TODO: возможно тут нужен чистый поток
+                thread::spawn(move|| {
+                    start_fuzzer(es, on_node_id);
+                });
+            }
+            EVALER => {
+                tokio::spawn(start_evaler(es, on_node_id));
+            },
+            _ => {},
+        }
+    }
+    sleep(Duration::from_secs(120)).await;
+}
+
+fn start_fuzzer(stream: ElementStream, client_id: u32) {
+    let broker_port = 1337;
+    let limit = 128;
+    
+    unsafe {
+        match fork(){
+            Err(e) => {
+                println!("failed to fork fuzzer process: {}", e);
+            }
+            Ok(res) => {
+                match res {
+                    os::ForkResult::Child => {
+                        thread::sleep(Duration::from_secs(5));
+                        println!("ima fuzzer and now will be setting up");
+                    }
+                    os::ForkResult::Parent(c_pid) => {
+                        println!("ima will be brocker");
+                    }
+                };
+            }
+        };
+    }
+
+    let _ = libfuzzer_libpng::fuzz(
+        &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
+        PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
+        vec![String::from("../../libfuzzer_libpng/fuzzer_libpng")],
+        broker_port, 
+        ClientId(client_id), 
+        stream.recv, 
+        stream.stream, 
+        limit,
+        0,
+    );
+}
+
+async fn start_evaler(mut stream: ElementStream, client_id: u32) {
     let (producer,mut consumer) = tokio::sync::mpsc::channel::<EvalTask>(10);
 
     let _= thread::spawn(move ||{
@@ -111,19 +214,19 @@ async fn main() {
         // Feedback to rate the interestingness of an input
         // This one is composed by two Feedbacks in OR
         let mut feedback = feedback_or!(
-        // New maximization map feedback linked to the edges observer and the feedback state
-        MaxMapFeedback::new_tracking(&edges_observer, true, false),
-        // Time feedback, this one does not need a feedback state
-        TimeFeedback::with_observer(&time_observer)
-    );
+            // New maximization map feedback linked to the edges observer and the feedback state
+            MaxMapFeedback::new_tracking(&edges_observer, true, false),
+            // Time feedback, this one does not need a feedback state
+            TimeFeedback::with_observer(&time_observer)
+        );
 
         // A feedback to choose if an input is a solution or not
         // We want to do the same crash deduplication that AFL does
         let mut objective = feedback_and_fast!(
-        // Take it only if trigger new coverage over crashes
-        // Uses `with_name` to create a different history from the `MaxMapFeedback` in `feedback` above
-        MaxMapFeedback::with_name("mapfeedback_metadata_objective", &edges_observer)
-    );
+            // Take it only if trigger new coverage over crashes
+            // Uses `with_name` to create a different history from the `MaxMapFeedback` in `feedback` above
+            MaxMapFeedback::with_name("mapfeedback_metadata_objective", &edges_observer)
+        );
 
         // create a State from scratch
         let mut state = StdState::new(
@@ -183,23 +286,11 @@ async fn main() {
         }
     });
 
-    process(socket, producer, compressor).await;
-
-    tokio::time::sleep(Duration::from_secs(20)).await;
-}
-
-async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<EvalTask>, compressor: GzipCompressor) {
     loop{
-        let testcases_bytes_compressed = match recv_tcp_msg(&mut socket).await {
-            Ok(testcases_bytes_compressed) => testcases_bytes_compressed,
-            Err(e) => {
-                println!("failed to read message, close tcp stream: {}", e);
-                let _= socket.shutdown().await;
-                return;
-            }
+        let testcases_bytes = match stream.recv.recv().await{
+            Some(msg) => msg,
+            None => continue,
         };
-        
-        let testcases_bytes = compressor.decompress(&testcases_bytes_compressed).expect("failed to decompress testcases");
 
         let mut testcases: Input = match rmp_serde::from_slice(&testcases_bytes){
             Ok(testcases) => testcases,
@@ -208,24 +299,24 @@ async fn process(mut socket: TcpStream, msg_producer: tokio::sync::mpsc::Sender<
                 continue;
             }
         };
-        let (resp_tx, resp_rx)= tokio::sync::oneshot::channel();
+        let (resp_tx, resp_rx)= oneshot::channel();
         
         let inputs = testcases.testcases.iter_mut().map(|x| BytesInput::from(x.as_slice())).collect();
         let msg = EvalTask{
             inp: inputs,
             response: resp_tx,
         };
-        msg_producer.send(msg).await.unwrap();
+        producer.send(msg).await.unwrap();
 
         let res= resp_rx.await.unwrap();
-
-        send_tcp_msg(
-            &mut socket, 
-            &Output{
-                eval_data: res,
-            },
-            &compressor,
-        ).await.expect("failed to send results over tcp");
+        let res_bytes = rmp_serde::to_vec(&EvaluationOutput{eval_data: res}).unwrap();
+        
+        stream.stream.send(llmp::TcpMasterMessage{
+            payload: res_bytes,
+            flags: LLMP_FLAG_EVALUATION,
+            client_id: ClientId(client_id),
+        }).await.expect("failed to send message to channel in evaler");
+        println!("send testcases coverage");
     }
 }
 
@@ -244,27 +335,133 @@ async fn recv_tcp_msg(stream: &mut TcpStream) -> Result<Vec<u8>, tokio::io::Erro
     Ok(bytes)
 }
 
-async fn send_tcp_msg<T>(stream: &mut TcpStream, msg: &T, compressor: &GzipCompressor) -> Result<(), tokio::io::Error>
-where
-    T: Serialize,
-{
-    let msg = rmp_serde::to_vec(msg).expect("failed to serialize message");
-    let msg_compressed = match compressor.compress(&msg).expect("failed to compress message") {
-        Some(msg_compressed) => msg_compressed,
-        None => msg,
-    };
-
-    let size_bytes = (msg_compressed.len() as u32).to_be_bytes();
+async fn send_tcp_msg(stream: &mut TcpStream, msg: Vec<u8>) -> Result<(), tokio::io::Error> {
+    let size_bytes = (msg.len() as u32).to_be_bytes();
     stream.write_all(&size_bytes).await?;
-    stream.write_all(&msg_compressed).await?;
+    stream.write_all(&msg).await?;
     Ok(())
 }
 
-struct ElementStream<T> {
-    stream: TcpStream,
-    recv: mpsc::Receiver<T>,
-    send: mpsc::Sender<T>,
-} 
+
+struct ElementStream {
+    stream: mpsc::Sender<llmp::TcpMasterMessage>,
+    recv: mpsc::Receiver<Vec<u8>>,
+}
+
+struct Multiplexer {
+    conn: tokio::net::tcp::OwnedReadHalf,
+    streams: HashMap<ClientId, mpsc::Sender<Vec<u8>>>,
+}
+
+impl Multiplexer {  
+    pub fn new(conn: tokio::net::tcp::OwnedReadHalf, streams: HashMap<ClientId, mpsc::Sender<Vec<u8>>>) -> Multiplexer {
+        return Multiplexer{
+            conn,
+            streams,
+        }
+    }
+
+    async fn recv_tcp_msg(stream: &mut tokio::net::tcp::OwnedReadHalf) -> Result<Vec<u8>, tokio::io::Error> {
+        // Always receive one be u32 of size, then the command.
+    
+        let mut size_bytes = [0_u8; 4];
+        stream.read_exact(&mut size_bytes).await?;
+        let size = u32::from_be_bytes(size_bytes);
+        let mut bytes = vec![];
+        bytes.resize(size as usize, 0_u8);
+    
+        stream.read_exact(&mut bytes).await?;
+    
+        Ok(bytes)
+    }
+
+    async fn send_tcp_msg(stream: &mut tokio::net::tcp::OwnedWriteHalf, msg: Vec<u8>) -> Result<(), tokio::io::Error> {
+        let size_bytes = (msg.len() as u32).to_be_bytes();
+        stream.write_all(&size_bytes).await?;
+        stream.write_all(&msg).await?;
+        Ok(())
+    }
+
+    pub async fn send_msg(stream: &mut tokio::net::tcp::OwnedWriteHalf, compressor: &GzipCompressor, msg: Vec<u8>, on_node_id: u32, flags:Flags) -> Result<(), tokio::io::Error>{
+
+        let mut flags = flags.bitor(LLMP_FLAG_B2M);
+        let mut compressed_msg = msg;
+        if flags & LLMP_FLAG_COMPRESSED != LLMP_FLAG_COMPRESSED {
+            compressed_msg = match compressor.compress(&compressed_msg) {
+                Ok(compressed) => {
+                    match compressed {
+                        Some(compressed) => {
+                            flags = flags.bitor(LLMP_FLAG_COMPRESSED);
+                            compressed
+                        }
+                        None => compressed_msg,
+                    }
+                }
+                Err(e) => {
+                    println!("failed to compress message: {}", e);
+                    compressed_msg
+                }
+            };
+        }
+
+        let master_msg = llmp::TcpMasterMessage{
+            client_id: ClientId(on_node_id),
+            flags,
+            payload: compressed_msg,
+        };
+        let msg = rmp_serde::to_vec(&master_msg).expect("failed to serialize message");
+        
+        return Multiplexer::send_tcp_msg(stream, msg).await;
+    }   
+
+    pub async fn handle_connection(mut self, compressor: GzipCompressor) {
+        loop {
+            let msg = match Multiplexer::recv_tcp_msg(&mut self.conn).await{
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("failed to read message, close tcp stream: {}", e);
+                    return;
+                }
+            };
+            let mut master_msg: llmp::TcpMasterMessage = match rmp_serde::from_slice(&msg){
+                Ok(testcases) => testcases,
+                Err(e) => {
+                    println!("failed to unmarshal tcp master message: {}", e);
+                    continue;
+                }
+            };
+
+            if master_msg.flags.bitand(LLMP_FLAG_COMPRESSED) == LLMP_FLAG_COMPRESSED {
+                match compressor.decompress(&master_msg.payload) {
+                    Ok(decompressed) => {
+                        master_msg.payload = decompressed
+                    }
+                    Err(e) => {
+                        print!("failed to decompress message: {}", e);
+                        continue;
+                    }
+                }
+            }
+            let ch = match self.streams.get(&master_msg.client_id){
+                Some(ch) => ch,
+                None => {
+                    println!("not found client with client_id {:#?}", master_msg.client_id);
+                    continue;
+                }
+            };
+            if ch.is_closed() {
+                println!("chan with client_id {:#?} is closed", master_msg.client_id);
+                continue;
+            }
+            match ch.send(master_msg.payload).await {
+                Err(e) => {
+                    println!("failed to send message to channel: {}", e);
+                }
+                _ => {println!("send message to dst {:#?}", master_msg.client_id)}
+            }
+        }
+    }
+}
 
 /// information about execution on evaler such as exit code, is asan, is msan etc.
 #[repr(transparent)]
@@ -293,7 +490,7 @@ struct Input {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Output {
+struct EvaluationOutput {
     eval_data: Vec<EvalutionData>
 }
 
@@ -303,7 +500,14 @@ struct Cores{
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct MasterMessage {
-    pub on_node_id: u16,
-    pub payload: Vec<u8>,
+pub struct NodeConfiguration {
+    pub elements: Vec<Element>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Element {
+    pub on_node_id:  u32,
+    pub kind: i64,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub fuzzer_configuration: Option<FuzzerConfiguration>,
 }

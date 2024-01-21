@@ -6,8 +6,12 @@ import (
 	"orchestration/core/infodb"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
+	"slices"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/pkg/errors"
 )
 
 /*
@@ -78,8 +82,10 @@ func (e Event) String() string {
 }
 
 type Node struct {
-	id       entities.NodeID
-	elements []Element
+	id              entities.NodeID
+	elements        []Element
+	cores           int64
+	fuzzerByAllTime uint32
 }
 
 type Element struct {
@@ -97,24 +103,25 @@ type Master struct {
 
 	mu        sync.Mutex
 	eventChan chan Event
-	nodeList  []*Node
+	nodes     map[entities.NodeID]*Node
 
 	db           fuzzInfoDB
 	testcaseChan chan entities.Testcase
 
 	lastRebalanceTime time.Time
-	fuzzers           []entities.ElementID
-	evalers           []entities.ElementID
+	fuzzers           map[entities.ElementID]struct{}
+	evalers           map[entities.ElementID]struct{}
 }
 
 func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 	master := &Master{
-		ctx:       ctx,
-		db:        db,
-		eventChan: make(chan Event, EventChanBuf),
-		nodeList:  make([]*Node, 0),
-		evalers:   make([]entities.ElementID, 0),
-		fuzzers:   make([]entities.ElementID, 0),
+		ctx:          ctx,
+		db:           db,
+		eventChan:    make(chan Event, EventChanBuf),
+		testcaseChan: make(chan entities.Testcase),
+		nodes:        make(map[entities.NodeID]*Node, 0),
+		evalers:      make(map[entities.ElementID]struct{}, 0),
+		fuzzers:      make(map[entities.ElementID]struct{}, 0),
 	}
 
 	go func() {
@@ -124,6 +131,10 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 				return
 			case event := <-master.eventChan:
 				logger.Infof("got new event: %v", event)
+				switch event.Event {
+				case ElementDeleted:
+					master.elementDeleted(event)
+				}
 			}
 		}
 	}()
@@ -135,37 +146,87 @@ func (m *Master) GetEventChan() chan<- Event {
 	return m.eventChan
 }
 
+func (m *Master) GetTestcaseChan() chan entities.Testcase {
+	return m.testcaseChan
+}
+
+func (m *Master) elementDeleted(e Event) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch e.NodeType {
+	case entities.Evaler:
+		delete(m.evalers, e.Element)
+		node, exists := m.nodes[e.Element.NodeID]
+		if !exists {
+			logger.Infof("node %v does not exist, can't delete its element", e.Element)
+		}
+		slices.DeleteFunc(node.elements, func(el Element) bool {
+			return el.OnNodeID == e.Element.OnNodeID && el.Type == e.NodeType
+		})
+		logger.Infof("deleted evaler %v", e.Element)
+	}
+}
+
+var (
+	ErrStopElement = errors.New("element stopped")
+	ErrMaxElements = errors.New("riched maximum number of elements")
+)
+
 // спрашиваем что поднять, обновляем уже после подъема???
-func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) NodeSetUp {
+func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) (NodeSetUp, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	logger.Infof("new node: %v with %d cores", nodeID, cores)
 
-	node := &Node{
-		id:       nodeID,
-		elements: make([]Element, 0, cores),
-	}
-	m.nodeList = append(m.nodeList, node)
+	node, exists := m.nodes[nodeID]
+	if !exists {
+		if cores == 0 {
+			cores = 1
+		}
 
-	if cores == 0 {
-		cores = 1
+		node = &Node{
+			id:       nodeID,
+			elements: make([]Element, 0, cores),
+			cores:    cores,
+		}
+		m.nodes[nodeID] = node
+
+	} else {
+		if node.cores == int64(len(node.elements)) {
+			return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
+		}
 	}
 	nodesCreated := 0
 
 	if len(m.evalers) == 0 {
 		evaler := Element{
-			OnNodeID: entities.OnNodeID(time.Now().Unix()),
+			OnNodeID: entities.OnNodeID(uuid.New().ID()),
 			Type:     entities.Evaler,
 		}
-		m.evalers = append(m.evalers, entities.ElementID{
+		m.evalers[entities.ElementID{
 			NodeID:   nodeID,
 			OnNodeID: evaler.OnNodeID,
-		})
+		}] = struct{}{}
 		node.elements = append(node.elements, evaler)
 		nodesCreated++
 	}
 
+	// experement
+	if true {
+		fuzzer := Element{
+			OnNodeID: entities.OnNodeID(node.fuzzerByAllTime + 1),
+			Type:     entities.Fuzzer,
+		}
+		node.fuzzerByAllTime++
+		m.evalers[entities.ElementID{
+			NodeID:   nodeID,
+			OnNodeID: fuzzer.OnNodeID,
+		}] = struct{}{}
+		node.elements = append(node.elements, fuzzer)
+		nodesCreated++
+	}
 	//TODO: сохранить количество ядер
 	// TODO: some hard hard logic here
 	// тут выдовать конфигурации тоже можно
@@ -176,7 +237,7 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) NodeSetUp {
 	return NodeSetUp{
 		Event:    NewElement,
 		Elements: node.elements,
-	}
+	}, nil
 }
 
 func (m *Master) newFuzzer(e Event) {

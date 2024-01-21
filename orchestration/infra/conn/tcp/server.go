@@ -8,12 +8,16 @@ import (
 	"orchestration/infra/utils/compression"
 	"orchestration/infra/utils/logger"
 	"orchestration/infra/utils/msgpack"
+	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 )
 
 const (
 	listenAddr = "127.0.0.1:9090"
+
+	recvChanTimeout = 30 * time.Millisecond
 )
 
 type Srv struct {
@@ -41,16 +45,17 @@ func NewSrv(m *master.Master) *Srv {
 			if err != nil {
 				select {
 				case <-srv.closed:
-					logger.Debugf("closed server on %s", listenAddr)
+					logger.Infof("closed server on %s", listenAddr)
 				default:
 					logger.Errorf(err, "failed to accept new tcp connection")
 				}
 				return
 			}
 			nodeID := nodeIDFromAddr(netConn.RemoteAddr().String())
-			conn := Connection{
-				conn:   netConn,
-				NodeID: nodeID,
+			conn := connection{
+				conn:        netConn,
+				NodeID:      nodeID,
+				estableshed: new(atomic.Bool),
 			}
 			coresBytes, err := conn.RecvMessage()
 			if err != nil {
@@ -64,21 +69,33 @@ func NewSrv(m *master.Master) *Srv {
 				conn.close()
 				continue
 			}
-			go srv.handleConnection(conn, cores.Cores)
+			go srv.handleConnection(conn, int64(cores.Cores))
 		}
 	}()
 
 	return srv
 }
 
-func (s *Srv) handleConnection(conn Connection, cores int64) {
-	recvByElement := s.setup(conn, cores)
+func (s *Srv) handleConnection(conn connection, cores int64) {
+	recvByElement, err := s.setup(conn, cores)
+	if err != nil {
+		conn.close()
+		if errors.Is(err, master.ErrMaxElements) {
+			logger.Infof(err.Error())
+			return
+		}
+		logger.Fatalf("failed to setup connection, abotring: %v", err)
+	}
 	converter := msgpack.New()
-
 	for {
 		msgBytes, err := conn.RecvMessage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				for el, ch := range recvByElement {
+					logger.Infof("stopped element {%d:%d}", conn.NodeID, el)
+					close(ch)
+				}
+				conn.close()
 				logger.Infof("hadnler for connection %d stopped", conn.NodeID)
 				return
 			}
@@ -109,10 +126,9 @@ func (s *Srv) handleConnection(conn Connection, cores int64) {
 				continue
 			}
 		}
-
 		select {
 		case recvByElement[entities.OnNodeID(msg.ClientID)] <- decompressedMsg:
-		default:
+		case <-time.After(recvChanTimeout):
 			logger.ErrorMessage(
 				"node %d client %d missed message with len %d",
 				conn.NodeID, msg.ClientID, len(decompressedMsg),
@@ -121,14 +137,24 @@ func (s *Srv) handleConnection(conn Connection, cores int64) {
 	}
 }
 
-func (s *Srv) setup(conn Connection, cores int64) map[entities.OnNodeID]chan []byte {
-	setup := s.master.SetupNewNode(conn.NodeID, cores)
-	recvByElement := make(map[entities.OnNodeID]chan []byte, len(setup.Elements))
+func (s *Srv) setup(conn connection, cores int64) (map[entities.OnNodeID]chan []byte, error) {
+	setup, err := s.master.SetupNewNode(conn.NodeID, cores)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		recvByElement     = make(map[entities.OnNodeID]chan []byte, len(setup.Elements))
+		nodeConfiguration = nodeConfiguration{
+			Elements: make([]element, 0, len(setup.Elements)),
+		}
+	)
+
 	for _, set := range setup.Elements {
+		ch := make(chan []byte)
+		recvByElement[set.OnNodeID] = ch
+
 		switch set.Type {
 		case entities.Evaler:
-			ch := make(chan []byte)
-			recvByElement[set.OnNodeID] = ch
 			evaler := NewEvaler(
 				MultiplexedConnection{
 					conn:      conn,
@@ -139,13 +165,54 @@ func (s *Srv) setup(conn Connection, cores int64) map[entities.OnNodeID]chan []b
 				s.master.GetEventChan(),
 			)
 			s.master.StartEvaler(evaler)
+			nodeConfiguration.Elements = append(nodeConfiguration.Elements, element{
+				OnNodeID: uint32(set.OnNodeID),
+				Kind:     int64(entities.Evaler),
+			})
 		case entities.Broker:
-			logger.Debugf("started fake broker")
+			// TODO: пока не ясно что тут надо делать
+			nodeConfiguration.Elements = append(nodeConfiguration.Elements, element{
+				OnNodeID: uint32(set.OnNodeID),
+				Kind:     int64(entities.Fuzzer),
+				FuzzerConfiguration: &fuzzerConfiguration{
+					MutatorID:   "mutator1",
+					SchedulerID: "scheduler1",
+				},
+			})
 		case entities.Fuzzer:
-			logger.Debugf("started fake fuzzer")
+			fuzzer := NewFuzzer(
+				MultiplexedConnection{
+					conn:      conn,
+					recvChan:  ch,
+					converter: msgpack.New(),
+				},
+				set.OnNodeID,
+				s.master.GetEventChan(),
+				s.master.GetTestcaseChan(),
+			)
+
+			go fuzzer.Start(s.master.Ctx())
+
+			nodeConfiguration.Elements = append(nodeConfiguration.Elements, element{
+				OnNodeID: uint32(set.OnNodeID),
+				Kind:     int64(entities.Fuzzer),
+				FuzzerConfiguration: &fuzzerConfiguration{
+					MutatorID:   "mutator1",
+					SchedulerID: "scheduler1",
+				},
+			})
 		}
 	}
-	return recvByElement
+
+	nc, err := msgpack.New().Marshal(nodeConfiguration)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal node configuration")
+	}
+	if err = conn.SendMessage(nc); err != nil {
+		return nil, errors.Wrap(err, "failed to send node configuration message")
+	}
+	conn.estableshed.Store(true)
+	return recvByElement, nil
 }
 
 func (s *Srv) Close() {

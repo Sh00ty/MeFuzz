@@ -27,6 +27,7 @@ libafl_targets = { path = "../libafl_targets/", features = ["sancov_pcguard_hitc
 # TODO Include it only when building cc
 libafl_cc = { path = "../libafl_cc/" }
 mimalloc = { version = "*", default-features = false }
+tokio = { version = "1.34.0",  features = ["full"] }
 
 [lib]
 name = "libfuzzer_libpng"

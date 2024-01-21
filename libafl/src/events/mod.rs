@@ -2,6 +2,7 @@
 
 pub mod simple;
 pub use simple::*;
+pub mod master;
 pub mod llmp;
 use alloc::{boxed::Box, string::String, vec::Vec};
 #[cfg(all(unix, feature = "std"))]

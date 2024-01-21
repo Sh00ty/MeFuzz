@@ -78,8 +78,6 @@ Welcome to `LibAFL`
 extern crate std;
 #[macro_use]
 pub extern crate alloc;
-#[macro_use]
-extern crate static_assertions;
 #[cfg(feature = "ctor")]
 pub use ctor::ctor;
 
@@ -105,7 +103,7 @@ pub mod observers;
 pub mod schedulers;
 pub mod stages;
 pub mod state;
-pub mod orchestration;
+
 
 pub mod fuzzer;
 use alloc::string::{FromUtf8Error, String};

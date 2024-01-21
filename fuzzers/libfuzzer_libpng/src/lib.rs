@@ -4,26 +4,28 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use core::time::Duration;
+use core::{time::Duration, panic};
 #[cfg(feature = "crash")]
 use std::ptr;
-use std::{env, path::PathBuf};
-
+use std::{env, path::PathBuf, thread};
+use tokio;
 use libafl::{
     bolts::{
+        llmp,
+        ClientId,
         current_nanos,
         rands::StdRand,
         tuples::{tuple_list, Merge},
         AsSlice,
     },
     corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
-    events::{setup_restarting_mgr_std, EventConfig, EventRestarter},
+    events::{EventConfig, EventRestarter, setup_restarting_mgr_master_feature},
     executors::{inprocess::InProcessExecutor, ExitKind, TimeoutExecutor},
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
     fuzzer::{Fuzzer, FuzzerConfiguration, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
-    monitors::MultiMonitor,
+    monitors::{MultiMonitor, NopMonitor},
     mutators::{
         scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
         token_mutations::Tokens,
@@ -41,7 +43,6 @@ use libafl::{
 use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, EDGES_MAP, MAX_EDGES_NUM};
 
 /// The main fn, `no_mangle` as it is a C main
-#[cfg(not(test))]
 #[no_mangle]
 pub fn libafl_main() {
     // Registry the metadata types used in this fuzzer
@@ -52,22 +53,51 @@ pub fn libafl_main() {
         "Workdir: {:?}",
         env::current_dir().unwrap().to_string_lossy().to_string()
     );
+
+    let (s, mut r) = tokio::sync::mpsc::channel(10);
+    let (_, rr) = tokio::sync::mpsc::channel(10);
+    thread::spawn(move || {
+        loop {
+            let res = r.blocking_recv();
+            if res.is_none(){
+                continue;
+            }
+            println!("got testcase from fuzzer: {:#?}", res);
+        }
+    });
+    let args: Vec<String> = env::args().collect();
     fuzz(
         &[PathBuf::from("./corpus")],
         PathBuf::from("./crashes"),
+        args,
         1337,
+        ClientId(10),
+        rr,
+        s,
+        10, 
+        0,
     )
     .expect("An error occurred while fuzzing");
 }
 
 /// The actual fuzzer
-#[cfg(not(test))]
-fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
+pub fn fuzz(
+    corpus_dirs: &[PathBuf], 
+    objective_dir: PathBuf, 
+    args: Vec<String>,
+    broker_port: u16, 
+    _client_id: ClientId, 
+    recv: tokio::sync::mpsc::Receiver<Vec<u8>>, 
+    sender: tokio::sync::mpsc::Sender<llmp::TcpMasterMessage>, 
+    send_limit: u32, 
+    recv_limit: u32,
+) -> Result<(), Error> {
     // 'While the stats are state, they are usually used in the broker - which is likely never restarted
-    let monitor = MultiMonitor::new(|s| println!("{s}"));
+    // let monitor = MultiMonitor::new(|s| println!("{s}"));
+    let monitor = NopMonitor::new();
 
     // The restarting state will spawn the same process again as child, then restarted it each time it crashes.
-    let (state, mut restarting_mgr) = match setup_restarting_mgr_std(
+    let (state, mut restarting_mgr) = match setup_restarting_mgr_master_feature(
         monitor,
         broker_port,
         EventConfig::AlwaysUnique,
@@ -75,6 +105,10 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
             mutator_id: MutatorID(String::from("libfuzzer")),
             scheduler_id: SchedulerID(String::from("libfuzzer")),
         }),
+        recv,
+        sender,
+        send_limit,
+        recv_limit,
     ) {
         Ok(res) => res,
         Err(err) => match err {
@@ -196,7 +230,7 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
 
     // The actual target run starts here.
     // Call LLVMFUzzerInitialize() if present.
-    let args: Vec<String> = env::args().collect();
+    
     if libfuzzer_initialize(&args) == -1 {
         println!("Warning: LLVMFuzzerInitialize failed with -1");
     }

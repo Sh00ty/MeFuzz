@@ -7,9 +7,11 @@ use alloc::{
 };
 #[cfg(feature = "std")]
 use core::sync::atomic::{compiler_fence, Ordering};
-use core::{marker::PhantomData, num::NonZeroUsize, time::Duration};
+use core::{marker::PhantomData, num::NonZeroUsize, time::Duration, panic};
 #[cfg(feature = "std")]
 use std::net::{SocketAddr, ToSocketAddrs};
+
+use tokio;
 
 use serde::Deserialize;
 #[cfg(feature = "std")]
@@ -133,11 +135,9 @@ where
 
     /// Connect to an llmp to master on the givien address
     #[cfg(feature = "std")]
-    pub fn connect_b2m<A>(&mut self, addr: A, send_limit: u32, recv_limit: u32) -> Result<(), Error>
-    where
-        A: ToSocketAddrs,
+    pub fn connect_b2m(&mut self, recv: tokio::sync::mpsc::Receiver<Vec<u8>>, sender: tokio::sync::mpsc::Sender<llmp::TcpMasterMessage>, send_limit: u32, recv_limit: u32) -> Result<(), Error>
     {
-        self.llmp.connect_b2m(addr, send_limit, recv_limit)
+        return self.llmp.connect_b2m(recv, sender, send_limit, recv_limit);
     }
 
     /// Run forever in the broker
@@ -543,7 +543,7 @@ where
         event: Event<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
         use crate::bolts::llmp::{
-            LLMP_FLAG_B2M, LLMP_FLAG_FROM_B2B, LLMP_NEW_TEST_CASE,
+            LLMP_FLAG_B2M, LLMP_FLAG_FROM_B2B, LLMP_FLAG_NEW_TEST_CASE,
         };
 
         let serialized = rmp_serde::to_vec(&event)?;
@@ -556,7 +556,7 @@ where
                 client_config: _,
                 time: _,
                 executions: _,
-            } => LLMP_FLAG_FROM_B2B | LLMP_FLAG_B2M | LLMP_NEW_TEST_CASE,
+            } => LLMP_FLAG_FROM_B2B | LLMP_FLAG_B2M | LLMP_FLAG_NEW_TEST_CASE,
             _ => LLMP_FLAG_INITIALIZED,
         };
 
@@ -882,6 +882,32 @@ where
         .launch()
 }
 
+/// setup_restarting_mgr_master_feature
+pub fn setup_restarting_mgr_master_feature<MT, S>(
+    monitor: MT,
+    broker_port: u16,
+    configuration: EventConfig,
+    fuzzer_conf: Option<FuzzerConfiguration>,
+    recv: tokio::sync::mpsc::Receiver<Vec<u8>>, 
+    sender: tokio::sync::mpsc::Sender<llmp::TcpMasterMessage>,
+    send_limit: u32,
+    recv_limit: u32,
+) -> Result<(Option<S>, LlmpRestartingEventManager<S, StdShMemProvider>), Error>
+where
+    MT: Monitor + Clone,
+    S: DeserializeOwned + UsesInput + HasClientPerfMonitor + HasExecutions,
+{
+    RestartingMgr::builder()
+        .shmem_provider(StdShMemProvider::new()?)
+        .monitor(Some(monitor))
+        .broker_port(broker_port)
+        .configuration(configuration)
+        .fuzzer_configuration(fuzzer_conf)
+        .master_connection_settings(Some((recv, sender, send_limit, recv_limit)))
+        .build()
+        .launch()
+}
+
 /// Provides a `builder` which can be used to build a [`RestartingMgr`], which is a combination of a
 /// `restarter` and `runner`, that can be used on systems both with and without `fork` support. The
 /// `restarter` will start a new process each time the child crashes or times out.
@@ -911,7 +937,7 @@ where
     remote_broker_addr: Option<SocketAddr>,
     /// The address to connect master, send_limit and recv_limit
     #[builder(default = None)]
-    master_connection_settings: Option<(SocketAddr, u32, u32)>,
+    master_connection_settings: Option<(tokio::sync::mpsc::Receiver<Vec<u8>>, tokio::sync::mpsc::Sender<llmp::TcpMasterMessage>, u32, u32)>,
     /// The type of manager to build
     #[builder(default = ManagerKind::Any)]
     kind: ManagerKind,
@@ -938,7 +964,7 @@ where
     MT: Monitor + Clone,
 {
     /// Launch the restarting manager
-    pub fn launch(&mut self) -> Result<(Option<S>, LlmpRestartingEventManager<S, SP>), Error> {
+    pub fn launch(mut self) -> Result<(Option<S>, LlmpRestartingEventManager<S, SP>), Error> {
         // We start ourself as child process to actually fuzz
         let (staterestorer, new_shmem_provider, core_id) = if std::env::var(_ENV_FUZZER_SENDER)
             .is_err()
@@ -950,11 +976,11 @@ where
                     broker.connect_b2b(remote_broker_addr)?;
                 };
 
-                if let Some((remote_master_addr, send_limit, recv_limit)) =
+                if let Some((recv, sender, send_limit, recv_limit)) =
                     self.master_connection_settings
                 {
                     log::info!("B2M: Connecting to {:?}", &remote_broker_addr);
-                    broker.connect_b2m(remote_master_addr, send_limit, recv_limit)?;
+                    broker.connect_b2m(recv, sender, send_limit, recv_limit)?;
                 };
 
                 if let Some(exit_cleanly_after) = self.exit_cleanly_after {

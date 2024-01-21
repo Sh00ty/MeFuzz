@@ -8,15 +8,22 @@ import (
 	"orchestration/infra/utils/compression"
 	"orchestration/infra/utils/logger"
 	"orchestration/infra/utils/msgpack"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 )
 
-type Connection struct {
-	conn   net.Conn
-	NodeID entities.NodeID
+var (
+	ErrConnectionClosed = errors.New("connection closed")
+)
+
+type connection struct {
+	conn        net.Conn
+	estableshed *atomic.Bool
+	NodeID      entities.NodeID
 }
 
 func nodeIDFromAddr(addr string) entities.NodeID {
@@ -36,19 +43,20 @@ func nodeIDFromAddr(addr string) entities.NodeID {
 	return entities.NodeID(nodeID)
 }
 
-func Connect(addr string, port uint16) (Connection, error) {
+func Connect(addr string, port uint16) (connection, error) {
 	netConn, err := net.DialTimeout(Protocol, fmt.Sprintf("%s:%d", addr, port), TcpDialTimeout)
 	if err != nil {
-		return Connection{}, errors.WithStack(err)
+		return connection{}, errors.WithStack(err)
 	}
 
-	return Connection{
-		conn:   netConn,
-		NodeID: nodeIDFromAddr(addr),
+	return connection{
+		conn:        netConn,
+		NodeID:      nodeIDFromAddr(addr),
+		estableshed: new(atomic.Bool),
 	}, nil
 }
 
-func (conn *Connection) RecvMessage() ([]byte, error) {
+func (conn *connection) RecvMessage() ([]byte, error) {
 	msgLenBytes := make([]byte, 4)
 	_, err := conn.conn.Read(msgLenBytes)
 	if err != nil {
@@ -62,7 +70,7 @@ func (conn *Connection) RecvMessage() ([]byte, error) {
 	return msgBytes, err
 }
 
-func (conn *Connection) SendMessage(msg []byte) error {
+func (conn *connection) SendMessage(msg []byte) error {
 
 	if err := binary.Write(conn.conn, binary.BigEndian, uint32(len(msg))); err != nil {
 		return err
@@ -73,18 +81,18 @@ func (conn *Connection) SendMessage(msg []byte) error {
 	return err
 }
 
-func (conn *Connection) String() string {
+func (conn *connection) String() string {
 	return fmt.Sprintf("{nodeID=%v}", conn.NodeID)
 }
 
-func (conn *Connection) close() {
+func (conn *connection) close() {
 	if err := conn.conn.Close(); err != nil {
 		logger.ErrorMessage("failed to close connection: %s", conn)
 	}
 }
 
 type MultiplexedConnection struct {
-	conn      Connection
+	conn      connection
 	converter msgpack.Converter
 	recvChan  chan []byte
 }
@@ -92,7 +100,7 @@ type MultiplexedConnection struct {
 func (c *MultiplexedConnection) Recv(out interface{}) error {
 	bytes, ok := <-c.recvChan
 	if !ok {
-		return errors.Errorf("connection closed: %v", c.conn)
+		return errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
 	}
 	return c.converter.Unmarshal(bytes, out)
 }
@@ -100,7 +108,7 @@ func (c *MultiplexedConnection) Recv(out interface{}) error {
 func (c *MultiplexedConnection) RecvEnum(out *msgpack.Namer) error {
 	bytes, ok := <-c.recvChan
 	if !ok {
-		return errors.Errorf("connection closed: %v", c.conn)
+		return errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
 	}
 	return msgpack.UnmarshalEnum(bytes, out)
 }
@@ -110,7 +118,11 @@ func (c *MultiplexedConnection) Send(onNodeID entities.OnNodeID, flags entities.
 	if err != nil {
 		return errors.Wrapf(err, "failed to marshal message: %v", msg)
 	}
-	return c.send(onNodeID, flags, bytes)
+	err = c.send(onNodeID, flags, bytes)
+	if errors.Is(err, net.ErrClosed) {
+		return ErrConnectionClosed
+	}
+	return err
 }
 
 func (c *MultiplexedConnection) SendEnum(onNodeID entities.OnNodeID, flags entities.Flags, msg msgpack.Namer) error {
@@ -118,7 +130,11 @@ func (c *MultiplexedConnection) SendEnum(onNodeID entities.OnNodeID, flags entit
 	if err != nil {
 		return errors.Wrapf(err, "failed to marshal message: %v", msg)
 	}
-	return c.send(onNodeID, flags, bytes)
+	err = c.send(onNodeID, flags, bytes)
+	if errors.Is(err, net.ErrClosed) {
+		return ErrConnectionClosed
+	}
+	return err
 }
 
 func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags entities.Flags, msg []byte) error {
@@ -142,10 +158,32 @@ func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags entities.
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal multiplex message")
 	}
+
+	if !c.conn.estableshed.Load() {
+		c.spin()
+	}
 	return c.conn.SendMessage(encoded)
+}
+
+func (c *MultiplexedConnection) spin() {
+	const backoff = 128
+
+	i := 0
+	for !c.conn.estableshed.Load() {
+		i++
+		if i == backoff {
+			i = 0
+			runtime.Gosched()
+		}
+	}
+	fmt.Println("after spin")
 }
 
 func (c *MultiplexedConnection) Close() {
 	c.conn.close()
 	close(c.recvChan)
+}
+
+func (c *MultiplexedConnection) Strign() string {
+	return c.conn.String()
 }

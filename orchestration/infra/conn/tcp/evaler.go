@@ -3,6 +3,7 @@ package tcp
 import (
 	"orchestration/core/master"
 	"orchestration/entities"
+	"orchestration/infra/utils/logger"
 	"orchestration/infra/utils/msgpack"
 
 	"github.com/pkg/errors"
@@ -34,11 +35,18 @@ func (e *Evaler) Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingD
 
 	in := evalIn{Testcases: evalTestcases}
 	if err := e.conn.Send(e.onNodeID, entities.Evaluation, in); err != nil {
+		if errors.Is(err, ErrConnectionClosed) {
+			return nil, master.ErrStopElement
+		}
 		return nil, errors.Wrap(err, "failed to send eval input message")
 	}
 
 	out := evaluationOutput{}
 	if err := e.conn.Recv(&out); err != nil {
+		if errors.Is(err, ErrConnectionClosed) {
+			logger.Infof("fuzzer connection on conn %v closed", e.conn)
+			return nil, master.ErrStopElement
+		}
 		return nil, errors.Wrapf(err, "failed to recv output message")
 	}
 
@@ -50,4 +58,11 @@ func (e *Evaler) Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingD
 		res[i].HasCrash = out.EvalData[i].ExecInfo != 1
 	}
 	return res, nil
+}
+
+func (e *Evaler) GetElementID() entities.ElementID {
+	return entities.ElementID{
+		NodeID:   e.conn.conn.NodeID,
+		OnNodeID: e.onNodeID,
+	}
 }

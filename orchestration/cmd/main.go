@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"orchestration/core/infodb"
 	"orchestration/core/master"
+	"orchestration/entities"
 	"orchestration/infra/conn/tcp"
+	"orchestration/infra/utils/hashing"
 	"orchestration/infra/utils/logger"
 	"os"
 	"os/signal"
@@ -18,7 +21,32 @@ func main() {
 	if err != nil {
 		logger.Fatalf("failed to initialize database: %v", err)
 	}
-	srv := tcp.NewSrv(master.NewMaster(context.Background(), infoDb))
+	m := master.NewMaster(context.Background(), infoDb)
+	srv := tcp.NewSrv(m)
+
+	for {
+		tc := ""
+		_, err = fmt.Scanf("%s", &tc)
+		fmt.Println(tc)
+		if err != nil {
+			fmt.Println("failed to scan")
+			break
+		}
+		if ctx.Err() != nil {
+			fmt.Println("ctx err")
+			break
+		}
+		m.GetTestcaseChan() <- entities.Testcase{
+			ID:        hashing.MakeHash([]byte(tc)),
+			InputData: []byte(tc),
+			FuzzerID: entities.ElementID{
+				OnNodeID: 15,
+				NodeID:   2130706433,
+			},
+		}
+		fmt.Println("tc saved")
+	}
+
 	<-ctx.Done()
 	srv.Close()
 	logger.Infof("server closed")

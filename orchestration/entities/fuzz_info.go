@@ -1,12 +1,14 @@
 package entities
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
 type (
-	OnNodeID    uint16
+	OnNodeID    uint32
 	NodeID      uint32
 	ElementType int8
 )
@@ -22,13 +24,11 @@ const (
 type Flags uint8
 
 const (
-	Compressed Flags = 1 << iota
-	_
-	Master
-	NewTestCase
-	_
-	Configuration
-	Evaluation
+	Compressed    Flags = 0x1
+	Master        Flags = 0x4
+	NewTestCase   Flags = 0x8
+	Evaluation    Flags = 0x16
+	Configuration Flags = 0x32
 )
 
 const (
@@ -85,6 +85,18 @@ type EvaluatingData struct {
 	Cov      Coverage
 	HasCrash bool
 	NewCov   uint
+}
+
+func (e EvaluatingData) String() string {
+	s := strings.Builder{}
+	s.WriteString("\nCov: [ ")
+	for i, c := range e.Cov {
+		if c != 0 {
+			s.WriteString(fmt.Sprintf("%d:%d ", i, c))
+		}
+	}
+	s.WriteString(fmt.Sprintf("]\nHasCrash=%t\n", e.HasCrash))
+	return s.String()
 }
 
 type Coverage [CovSize]byte

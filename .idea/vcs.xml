@@ -2,9 +2,6 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/fuzzers/libafl_nyx/QEMU-Nyx" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/fuzzers/libafl_nyx/QEMU-Nyx/capstone_v4" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/fuzzers/libafl_nyx/QEMU-Nyx/libxdc" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/fuzzers/libafl_nyx/packer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/fuzzers/forkserver_simple/AFLplusplus" vcs="Git" />
   </component>
 </project>

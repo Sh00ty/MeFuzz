@@ -13,37 +13,50 @@ import (
 )
 
 type Fuzzer struct {
-	conn                 MultiplexedConnection
-	onNodeIDs            entities.OnNodeID
-	performanceEventChan chan<- master.Event
-	recvMsgChan          chan entities.Testcase
+	conn                   MultiplexedConnection
+	onNodeIDs              entities.OnNodeID
+	configurationEventChan chan<- master.Event
+	testcaseChan           chan entities.Testcase
 }
 
 func NewFuzzer(
 	conn MultiplexedConnection,
 	onNodeIDs entities.OnNodeID,
-	performanceEventChan chan<- master.Event,
-	recvMsgChan chan entities.Testcase,
+	configurationEventChan chan<- master.Event,
+	testcaseChan chan entities.Testcase,
 ) *Fuzzer {
 	return &Fuzzer{
-		conn:                 conn,
-		onNodeIDs:            onNodeIDs,
-		performanceEventChan: performanceEventChan,
-		recvMsgChan:          recvMsgChan,
+		conn:                   conn,
+		onNodeIDs:              onNodeIDs,
+		configurationEventChan: configurationEventChan,
+		testcaseChan:           testcaseChan,
 	}
 }
 
 func (f *Fuzzer) Start(ctx context.Context) {
 	for {
-		out := newTestcase{}
-		if err := f.conn.Recv(&out); err != nil {
+		outBytes, err := f.conn.RecvBytes()
+		if err != nil {
 			if errors.Is(err, ErrConnectionClosed) {
+				f.configurationEventChan <- master.Event{
+					Event:    master.ElementDeleted,
+					NodeType: entities.Fuzzer,
+					Element: entities.ElementID{
+						NodeID:   f.conn.conn.NodeID,
+						OnNodeID: f.onNodeIDs,
+					},
+				}
 				logger.Infof("fuzzer connection on conn %v closed", f.conn)
 				return
 			}
 			logger.Errorf(err, "failed to recv output message")
 			continue
 		}
+		out := &newTestcase{}
+		if err := msgpack.UnmarshalEnum(outBytes, out); err != nil {
+			logger.Errorf(err, "failed to unmarshal new testcase")
+		}
+
 		inputData := msgpack.CovertTo[int, byte](out.Input.Input)
 		tc := entities.Testcase{
 			ID: hashing.MakeHash(inputData),
@@ -52,20 +65,20 @@ func (f *Fuzzer) Start(ctx context.Context) {
 				OnNodeID: f.onNodeIDs,
 			},
 			InputData:  inputData,
-			Execs:      out.Executions,
-			CorpusSize: out.CorpusSize,
+			Execs:      uint64(out.Executions),
+			CorpusSize: uint64(out.CorpusSize),
 			CreatedAt:  time.Unix(int64(out.Timestamp.Secs), int64(out.Timestamp.Nsec)).In(time.Local),
 		}
 
 		select {
-		case f.recvMsgChan <- tc:
+		case f.testcaseChan <- tc:
 		default:
-			f.performanceEventChan <- master.Event{
+			f.configurationEventChan <- master.Event{
 				Event:    master.NeedMoreEvalers,
-				NodeType: entities.Broker,
+				NodeType: entities.Fuzzer,
 			}
 			select {
-			case f.recvMsgChan <- tc:
+			case f.testcaseChan <- tc:
 			case <-ctx.Done():
 				logger.Infof("closed fuzzer %v %v", f.conn.conn.NodeID, f.onNodeIDs)
 				return

@@ -89,6 +89,7 @@ where
         match Self::handle_in_broker(&mut self.monitor, &event)? {
             BrokerEventResult::Forward => self.events.push(event),
             BrokerEventResult::ForwardToMaster =>  {
+                println!("{:#?}", event);
                 let event_bytes = rmp_serde::to_vec(&event)?;
                 let compressed = self.compressor.compress(&event_bytes)?;
                 let mut msg = llmp::TcpMasterMessage{

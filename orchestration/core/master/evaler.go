@@ -17,8 +17,8 @@ type evalClnt interface {
 
 const (
 	evalRetryCount = 1
-	saveTimeout    = 5 * time.Minute
-	bufferMaxSize  = 1
+	saveTimeout    = 1 * time.Minute
+	bufferMaxSize  = 10
 )
 
 // На каждый оценщик поднимается один воркер
@@ -28,8 +28,8 @@ const (
 type Worker struct {
 	cancel context.CancelFunc
 
-	newTestcasesChan chan entities.Testcase
-	performanceChan  chan<- Event
+	testcaseChan           chan entities.Testcase
+	configurationEventChan chan<- Event
 
 	evaler evalClnt
 	db     fuzzInfoDB
@@ -38,8 +38,8 @@ type Worker struct {
 }
 
 func newWorker(
-	newTestcasesChan chan entities.Testcase,
-	performanceChan chan<- Event,
+	testcaseChan chan entities.Testcase,
+	configurationEventChan chan<- Event,
 	db fuzzInfoDB,
 	evaler evalClnt,
 ) *Worker {
@@ -47,32 +47,39 @@ func newWorker(
 		panic("buffer size must be greater then 0")
 	}
 	return &Worker{
-		newTestcasesChan: newTestcasesChan,
-		performanceChan:  performanceChan,
-		db:               db,
-		evaler:           evaler,
-		tcBuf:            make([]entities.Testcase, 0, bufferMaxSize),
+		testcaseChan:           testcaseChan,
+		configurationEventChan: configurationEventChan,
+		db:                     db,
+		evaler:                 evaler,
+		tcBuf:                  make([]entities.Testcase, 0, bufferMaxSize),
 	}
 }
 
 func (w *Worker) Run(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
-
 	ticker := time.NewTicker(saveTimeout)
+	secondeChance := true
 	for {
 		select {
 		case <-ticker.C:
-			w.performanceChan <- Event{
-				Event: NeedMoreFuzzers,
-			}
 			w.flush()
-		case testcase := <-w.newTestcasesChan:
+			if !secondeChance {
+				w.configurationEventChan <- Event{
+					Event: NeedMoreFuzzers,
+				}
+				secondeChance = true
+				continue
+			}
+			secondeChance = false
+		case testcase := <-w.testcaseChan:
 			w.tcBuf = append(w.tcBuf, testcase)
 			if uint(len(w.tcBuf)) == bufferMaxSize {
 				w.flush()
 			}
+			secondeChance = true
+			ticker.Reset(saveTimeout)
 		case <-ctx.Done():
-			logger.Infof("worker stoped")
+			logger.Infof("eval worker stoped")
 			return
 		}
 	}
@@ -91,14 +98,14 @@ func (w *Worker) flush() {
 		evalData, err := w.evaler.Evaluate(w.tcBuf)
 		if errors.Is(err, ErrStopElement) {
 			w.cancel()
-			w.performanceChan <- Event{
+			w.configurationEventChan <- Event{
 				Event:    ElementDeleted,
 				NodeType: entities.Evaler,
 				Element:  w.evaler.GetElementID(),
 			}
 			for _, tc := range w.tcBuf {
 				logger.Infof("resend tc %d to testcase chan", tc.ID)
-				w.newTestcasesChan <- tc
+				w.testcaseChan <- tc
 			}
 			return
 		}
@@ -108,8 +115,8 @@ func (w *Worker) flush() {
 		}
 
 		logger.Debugf("evaled new testcases")
-		for _, ed := range evalData {
-			fmt.Printf("%v", ed)
+		for i, ed := range evalData {
+			fmt.Printf("%v%v\n", w.tcBuf[i], ed)
 		}
 		w.db.AddTestcases(w.tcBuf, evalData)
 		break

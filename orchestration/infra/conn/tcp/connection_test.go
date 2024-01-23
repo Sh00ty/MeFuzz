@@ -1,5 +1,12 @@
 package tcp
 
+import (
+	"orchestration/infra/utils/msgpack"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
 // import (
 // 	"fmt"
 // 	"github.com/stretchr/testify/assert"
@@ -11,6 +18,13 @@ package tcp
 // 	"testing"
 // 	"time"
 // )
+
+func TestMain(t *testing.T) {
+	out := newTestcase{}
+	data := []byte{129, 171, 78, 101, 119, 84, 101, 115, 116, 99, 97, 115, 101, 151, 145, 146, 115, 16, 192, 162, 79, 107, 3, 172, 65, 108, 119, 97, 121, 115, 85, 110, 105, 113, 117, 101, 146, 206, 101, 173, 105, 230, 206, 33, 219, 55, 246, 65}
+	err := msgpack.UnmarshalEnum(data, &out)
+	require.NoError(t, err)
+}
 
 // func TestConnectionCreation(t *testing.T) {
 // 	nodeID := uint32(12)

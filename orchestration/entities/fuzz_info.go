@@ -60,8 +60,8 @@ type Testcase struct {
 	ID         uint64
 	FuzzerID   ElementID
 	InputData  []byte
-	Execs      uint32
-	CorpusSize uint32
+	Execs      uint64
+	CorpusSize uint64
 	CreatedAt  time.Time
 }
 

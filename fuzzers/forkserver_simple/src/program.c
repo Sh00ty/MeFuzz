@@ -9,6 +9,8 @@ void vuln(char *buf) {
   if (strcmp(buf, "vuln") == 0) { abort(); }
 }
 
+const int q = 16e5;
+
 int main(int argc, char **argv) {
   FILE *file = stdin;
   if (argc > 1) { file = fopen(argv[1], "rb"); }
@@ -23,14 +25,21 @@ int main(int argc, char **argv) {
   // The following line is also needed for shared memory testcase fuzzing
   unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
 
-  for (int i = 0; i < 16; i++){
+  for (int i = 0; i < q; i++){
     printf("input: %s\n", buf);
+    if (strlen(buf) < 3) continue; 
+    if (buf[0] == 'b') {
+        if (buf[1] == 'a') {
+            if (buf[2] == 'd') { printf("%c", buf[0]);}
+        }
+    }
+  }
+  printf("input: %s\n", buf);
     if (buf[0] == 'b') {
         if (buf[1] == 'a') {
             if (buf[2] == 'd') { abort(); }
         }
     }
-  }
 
   vuln(buf);
 

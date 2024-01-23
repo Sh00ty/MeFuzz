@@ -96,18 +96,18 @@ type Element struct {
 type fuzzInfoDB interface {
 	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
 	AddFuzzer(fuzzer infodb.Fuzzer) error
+	GetCovData() (map[entities.ElementID]infodb.Fuzzer, *infodb.CovData)
 }
 
 type Master struct {
 	ctx context.Context
 
-	mu        sync.Mutex
-	eventChan chan Event
-	nodes     map[entities.NodeID]*Node
-
 	db           fuzzInfoDB
 	testcaseChan chan entities.Testcase
+	eventChan    chan Event
 
+	mu                sync.Mutex
+	nodes             map[entities.NodeID]*Node
 	lastRebalanceTime time.Time
 	fuzzers           map[entities.ElementID]struct{}
 	evalers           map[entities.ElementID]struct{}
@@ -127,7 +127,7 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-master.ctx.Done():
 				return
 			case event := <-master.eventChan:
 				logger.Infof("got new event: %v", event)
@@ -135,6 +135,22 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 				case ElementDeleted:
 					master.elementDeleted(event)
 				}
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-master.ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+				_, cov := master.db.GetCovData()
+				err := cov.UpdateDistances()
+				if err != nil {
+					logger.Errorf(err, "failed to update distances")
+				}
+				cov.GetNearestDistances()
 			}
 		}
 	}()
@@ -192,13 +208,13 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) (NodeSetUp, e
 			cores:    cores,
 		}
 		m.nodes[nodeID] = node
-
 	} else {
 		if node.cores == int64(len(node.elements)) {
 			return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
 		}
 	}
-	nodesCreated := 0
+
+	newElements := make([]Element, 0, cores)
 
 	if len(m.evalers) == 0 {
 		evaler := Element{
@@ -209,23 +225,28 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) (NodeSetUp, e
 			NodeID:   nodeID,
 			OnNodeID: evaler.OnNodeID,
 		}] = struct{}{}
-		node.elements = append(node.elements, evaler)
-		nodesCreated++
+		newElements = append(newElements, evaler)
 	}
 
 	// experement
-	if true {
+	if len(newElements) == 0 {
 		fuzzer := Element{
 			OnNodeID: entities.OnNodeID(node.fuzzerByAllTime + 1),
 			Type:     entities.Fuzzer,
 		}
 		node.fuzzerByAllTime++
-		m.evalers[entities.ElementID{
+		m.fuzzers[entities.ElementID{
 			NodeID:   nodeID,
 			OnNodeID: fuzzer.OnNodeID,
 		}] = struct{}{}
-		node.elements = append(node.elements, fuzzer)
-		nodesCreated++
+		newElements = append(newElements, fuzzer)
+		m.newFuzzer(entities.ElementID{
+			NodeID:   nodeID,
+			OnNodeID: fuzzer.OnNodeID,
+		}, entities.FuzzerConf{
+			MutatorID: "mut1",
+			ForkMode:  true,
+		})
 	}
 	//TODO: сохранить количество ядер
 	// TODO: some hard hard logic here
@@ -233,23 +254,24 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) (NodeSetUp, e
 	// можно смело фаззер добавлять, если что добалансим??
 
 	m.lastRebalanceTime = time.Now()
+	node.elements = append(node.elements, newElements...)
 
 	return NodeSetUp{
 		Event:    NewElement,
-		Elements: node.elements,
+		Elements: newElements,
 	}, nil
 }
 
-func (m *Master) newFuzzer(e Event) {
+func (m *Master) newFuzzer(id entities.ElementID, conf entities.FuzzerConf) {
 	if err := m.db.AddFuzzer(infodb.Fuzzer{
-		ID:            e.Element,
-		Configuration: e.Payload.(entities.FuzzerConf),
+		ID:            id,
+		Configuration: conf,
 		Registered:    time.Now(),
 		Testcases:     make(map[uint64]struct{}, 0),
 	}); err != nil {
-		logger.Errorf(err, "failed to add new fuzzer: %v", e.Element)
+		logger.Errorf(err, "failed to add new fuzzer: %v", id)
 	}
-	logger.Infof("ADDED NEW FUZZER: %v", e.Element)
+	logger.Infof("ADDED NEW FUZZER: %v", id)
 }
 
 func (m *Master) StartEvaler(evaler evalClnt) {

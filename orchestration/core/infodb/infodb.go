@@ -92,15 +92,17 @@ func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []en
 
 		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
 
+		evalDataList[i].NewCov = db.NewGeneralCov(evalDataList[i].Cov)
 		if !evalDataList[i].HasCrash && evalDataList[i].NewCov == 0 {
 			logger.Debug("useless testcase")
 			continue
 		}
+
 		if evalDataList[i].HasCrash {
 			fuzzer.BugsFound++
 		}
-		fuzzer.Testcases[tcList[i].ID] = struct{}{}
 
+		fuzzer.Testcases[tcList[i].ID] = struct{}{}
 		db.fuzzerMap[tcList[i].FuzzerID] = fuzzer
 
 		if err := db.seedPool.AddSeed(tcList[i], evalDataList[i]); err != nil {

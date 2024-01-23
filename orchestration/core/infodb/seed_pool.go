@@ -26,17 +26,18 @@ func seedCmp(ai interface{}, bi interface{}) int {
 	if a.ID == b.ID {
 		return 0
 	}
-	if a.Crash || b.Crash {
-		if a.Crash && !b.Crash {
-			return -1
-		} else if !a.Crash && b.Crash {
-			return 1
-		}
+
+	if a.Crash && !b.Crash {
+		return -1
 	}
+	if !a.Crash && b.Crash {
+		return 1
+	}
+
 	if a.NewCov != b.NewCov {
 		return int(b.NewCov) - int(a.NewCov)
 	}
-	if before := a.CreatedAt.Before(b.CreatedAt); before {
+	if a.CreatedAt.Before(b.CreatedAt) {
 		return 1
 	}
 	return -1

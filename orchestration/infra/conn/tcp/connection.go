@@ -102,15 +102,15 @@ func (c *MultiplexedConnection) Recv(out interface{}) error {
 	if !ok {
 		return errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
 	}
-	return c.converter.Unmarshal(bytes, out)
+	return msgpack.Unmarshal(bytes, out)
 }
 
-func (c *MultiplexedConnection) RecvEnum(out *msgpack.Namer) error {
+func (c *MultiplexedConnection) RecvBytes() ([]byte, error) {
 	bytes, ok := <-c.recvChan
 	if !ok {
-		return errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
+		return nil, errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
 	}
-	return msgpack.UnmarshalEnum(bytes, out)
+	return bytes, nil
 }
 
 func (c *MultiplexedConnection) Send(onNodeID entities.OnNodeID, flags entities.Flags, msg interface{}) error {

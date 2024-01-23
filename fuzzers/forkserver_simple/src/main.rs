@@ -1,5 +1,5 @@
-use std::{thread::{self}, time::Duration, ops::{BitOr, BitAnd}, path::PathBuf, str::FromStr};
-use libafl::{executors, bolts::{llmp::{Flags, LLMP_FLAG_COMPRESSED, LLMP_FLAG_B2M, LLMP_FLAG_EVALUATION, self}, os::{fork, self}}, FuzzerConfiguration};
+use std::{thread::{self}, time::Duration, ops::{BitOr, BitAnd}, path::PathBuf, str::FromStr, borrow::Borrow};
+use libafl::{executors, bolts::{llmp::{Flags, LLMP_FLAG_COMPRESSED, LLMP_FLAG_B2M, LLMP_FLAG_EVALUATION, self}, os::{fork, self}, compress}, FuzzerConfiguration, events::master::MasterEventManager, monitors::{NopMonitor, SimpleMonitor}};
 use num_cpus;
 use tokio::{net::TcpStream, sync::{oneshot, mpsc}, time::sleep};
 use serde::{Deserialize, Serialize};
@@ -11,12 +11,12 @@ use libafl::{bolts::{
     current_nanos,
     rands::StdRand,
     shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-    tuples::tuple_list,
+    tuples::{tuple_list, MatchName, Merge},
     AsMutSlice,
-}, corpus::InMemoryCorpus, executors::{
-    forkserver::ForkserverExecutor,
+}, corpus::{Corpus, InMemoryCorpus, OnDiskCorpus}, executors::{
+    forkserver::{TimeoutForkserverExecutor, ForkserverExecutor},
     HasObservers,
-}, feedback_and_fast, feedback_or, feedbacks::{MaxMapFeedback, TimeFeedback}, fuzzer::StdFuzzer, inputs::BytesInput, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, state::StdState};
+},feedback_and_fast, feedback_or,stages::mutational::StdMutationalStage, feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback}, fuzzer::{StdFuzzer, Fuzzer}, inputs::BytesInput, observers::{HitcountsMapObserver, MapObserver, StdMapObserver, TimeObserver}, schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler}, state::{HasCorpus, HasMetadata, StdState}, mutators::{scheduled::havoc_mutations, tokens_mutations, StdScheduledMutator, Tokens}};
 use libafl::events::NopEventManager;
 use nix::{sys::signal::Signal, libc::time};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -45,6 +45,13 @@ struct Opt {
         default_value = "1200"
     )]
     timeout: u64,
+
+    #[arg(
+        help = "The directory to read initial inputs from ('seeds')",
+        name = "INPUT_DIR",
+        required = true
+    )]
+    in_dir: PathBuf,
 
     #[arg(
         help = "If not set, the child's stdout and stderror will be redirected to /dev/null",
@@ -99,7 +106,7 @@ async fn main() {
     let mut multeplex_tx_map: HashMap<ClientId, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let mut multeplex_rx_map: HashMap<ClientId, mpsc::Receiver<Vec<u8>>> = HashMap::new();
     for i in 0..conf.elements.len() {
-        let (tx, rx) = mpsc::channel(10);
+        let (tx, rx) = mpsc::channel(100);
         multeplex_tx_map.insert(ClientId(conf.elements[i].on_node_id), tx);
         multeplex_rx_map.insert(ClientId(conf.elements[i].on_node_id), rx);
     }
@@ -111,7 +118,7 @@ async fn main() {
         multiplexer.handle_connection(GzipCompressor::new(GZIP_THRESHOLD)).await;
     });
 
-    let (sendtx, mut sendrx) = mpsc::channel::<llmp::TcpMasterMessage>(10);
+    let (sendtx, mut sendrx) = mpsc::channel::<llmp::TcpMasterMessage>(100);
 
     tokio::spawn(async move {
         loop {
@@ -148,43 +155,134 @@ async fn main() {
             _ => {},
         }
     }
-    sleep(Duration::from_secs(120)).await;
+    sleep(Duration::from_secs(300)).await;
 }
 
 fn start_fuzzer(stream: ElementStream, client_id: u32) {
-    let broker_port = 1337;
-    let limit = 128;
-    
-    unsafe {
-        match fork(){
-            Err(e) => {
-                println!("failed to fork fuzzer process: {}", e);
-            }
-            Ok(res) => {
-                match res {
-                    os::ForkResult::Child => {
-                        thread::sleep(Duration::from_secs(5));
-                        println!("ima fuzzer and now will be setting up");
-                    }
-                    os::ForkResult::Parent(c_pid) => {
-                        println!("ima will be brocker");
-                    }
-                };
-            }
-        };
-    }
+    // let broker_port = 1337;
+    // let limit = 128;
 
-    let _ = libfuzzer_libpng::fuzz(
-        &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
-        PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
-        vec![String::from("../../libfuzzer_libpng/fuzzer_libpng")],
-        broker_port, 
-        ClientId(client_id), 
-        stream.recv, 
-        stream.stream, 
-        limit,
-        0,
+    // let _ = libfuzzer_libpng::fuzz(
+    //     &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
+    //     PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
+    //     vec![String::from("../../libfuzzer_libpng/fuzzer_libpng")],
+    //     broker_port, 
+    //     ClientId(client_id), 
+    //     stream.recv, 
+    //     stream.stream, 
+    //     limit,
+    //     0,
+    // );
+    const MAP_SIZE: usize = 65536;
+
+    let opt = Opt::parse();
+    let corpus_dirs: Vec<PathBuf> = [opt.in_dir].to_vec();
+
+    // The unix shmem provider supported by AFL++ for shared memory
+    let mut shmem_provider = UnixShMemProvider::new().unwrap();
+
+    // The coverage map shared between observer and executor
+    let mut shmem = shmem_provider.new_shmem(MAP_SIZE).unwrap();
+    // let the forkserver know the shmid
+    shmem.write_to_env("__AFL_SHM_ID").unwrap();
+    let shmem_buf = shmem.as_mut_slice();
+
+    // Create an observation channel using the signals map
+    let edges_observer =
+        unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
+
+    // Create an observation channel to keep track of the execution time
+    let time_observer = TimeObserver::new("time");
+
+    // Feedback to rate the interestingness of an input
+    // This one is composed by two Feedbacks in OR
+    let mut feedback = feedback_or!(
+        // New maximization map feedback linked to the edges observer and the feedback state
+        MaxMapFeedback::new_tracking(&edges_observer, true, false),
+        // Time feedback, this one does not need a feedback state
+        TimeFeedback::with_observer(&time_observer)
     );
+
+    // A feedback to choose if an input is a solution or not
+    // We want to do the same crash deduplication that AFL does
+    let mut objective = feedback_and_fast!(
+        // Must be a crash
+        CrashFeedback::new(),
+        // Take it only if trigger new coverage over crashes
+        // Uses `with_name` to create a different history from the `MaxMapFeedback` in `feedback` above
+        MaxMapFeedback::with_name("mapfeedback_metadata_objective", &edges_observer)
+    );
+
+    // create a State from scratch
+    let mut state = StdState::new(
+        // RNG
+        StdRand::with_seed(current_nanos()),
+        // Corpus that will be evolved, we keep it in memory for performance
+        InMemoryCorpus::<BytesInput>::new(),
+        // Corpus in which we store solutions (crashes in this example),
+        // on disk so the user can get them after stopping the fuzzer
+        InMemoryCorpus::<BytesInput>::new(),
+        // States of the feedbacks.
+        // The feedbacks can report the data that should persist in the State.
+        &mut feedback,
+        // Same for objective feedbacks
+        &mut objective,
+    )
+    .unwrap();
+
+    // The Monitor trait define how the fuzzer stats are reported to the user
+    let monitor = SimpleMonitor::new(|s| println!("{s}"));
+
+    // The event manager handle the various events generated during the fuzzing loop
+    // such as the notification of the addition of a new item to the corpus
+    let mut mgr = MasterEventManager::new(
+        monitor, 
+        compress::GzipCompressor::new(1024), 
+        ClientId(client_id), 
+        stream.stream, 
+    );
+
+    // A minimization+queue policy to get testcasess from the corpus
+    let scheduler = IndexesLenTimeMinimizerScheduler::new(QueueScheduler::new());
+
+    // A fuzzer with feedbacks and a corpus scheduler
+    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
+    
+    // If we should debug the child
+    let debug_child = opt.debug_child;
+
+    // Create the executor for the forkserver
+    let args = opt.arguments;
+
+    let mut tokens = Tokens::new();
+    let mut forkserver = ForkserverExecutor::builder()
+        .program(opt.executable)
+        .debug_child(debug_child)
+        .shmem_provider(&mut shmem_provider)
+        .autotokens(&mut tokens)
+        .parse_afl_cmdline(args)
+        .coverage_map_size(MAP_SIZE)
+        .build(tuple_list!(time_observer, edges_observer))
+        .unwrap();
+
+    let mut executor = TimeoutForkserverExecutor::with_signal(
+        forkserver,
+        Duration::from_millis(opt.timeout),
+        opt.signal,
+    )
+    .expect("Failed to create the executor.");
+    
+    state.load_initial_inputs(&mut fuzzer,&mut executor, &mut mgr, &corpus_dirs).expect("Failed to load initial inputs");
+
+    state.add_metadata(tokens);
+
+    // Setup a mutational stage with a basic bytes mutator
+    let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    
+    fuzzer
+        .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+        .expect("Error in the fuzzing loop");
 }
 
 async fn start_evaler(mut stream: ElementStream, client_id: u32) {
@@ -261,7 +359,7 @@ async fn start_evaler(mut stream: ElementStream, client_id: u32) {
             .coverage_map_size(MAP_SIZE)
             .build(tuple_list!(time_observer, edges_observer))
             .unwrap();
-
+        
         while let Some(tasks) = consumer.blocking_recv() {
             println!("got eval task");
             let mut res_msg: Vec<EvalutionData> = Vec::new();
@@ -506,7 +604,7 @@ pub struct NodeConfiguration {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Element {
-    pub on_node_id:  u32,
+    pub on_node_id: u32,
     pub kind: i64,
     #[serde(skip_serializing_if="Option::is_none")]
     pub fuzzer_configuration: Option<FuzzerConfiguration>,

@@ -75,7 +75,7 @@ type evalIn struct {
 }
 
 func (input) Name() string {
-	return "testcases"
+	return "input"
 }
 
 // fuzzer messages
@@ -84,10 +84,14 @@ type newTestcase struct {
 	Input        input     `msgpack:"input"`
 	ObserversBug *[]int    `msgpack:",omitempty"`
 	ExitKind     string    `msgpack:"exit_kind"`
+	CorpusSize   uint32    `msgpack:"corpus_size"`
 	ClientConfig string    `msgpack:"client_config"`
 	Timestamp    timestamp `msgpack:"time"`
 	Executions   uint32    `msgpack:"executions"`
-	CorpusSize   uint32    `msgpack:"corpus_size"`
+}
+
+func (newTestcase) Name() string {
+	return "NewTestcase"
 }
 
 type input struct {

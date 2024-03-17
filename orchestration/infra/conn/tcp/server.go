@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	listenAddr = "127.0.0.1:9090"
+	listenAddr = ":9990"
 
 	recvChanTimeout = 30 * time.Millisecond
 )
@@ -63,21 +63,21 @@ func NewSrv(m *master.Master) *Srv {
 				conn.close()
 				continue
 			}
-			cores := cores{}
-			if err = msgpack.Unmarshal(coresBytes, &cores); err != nil {
+			initMsg := initMsg{}
+			if err = msgpack.Unmarshal(coresBytes, &initMsg); err != nil {
 				logger.Errorf(err, "failed to unmarshal cores count from node %d", nodeID)
 				conn.close()
 				continue
 			}
-			go srv.handleConnection(conn, int64(cores.Cores))
+			go srv.handleConnection(conn, initMsg)
 		}
 	}()
 
 	return srv
 }
 
-func (s *Srv) handleConnection(conn connection, cores int64) {
-	recvByElement, err := s.setup(conn, cores)
+func (s *Srv) handleConnection(conn connection, initMsg initMsg) {
+	recvByElement, err := s.setup(conn, initMsg.Cores, initMsg.ManualRole)
 	if err != nil {
 		conn.close()
 		if errors.Is(err, master.ErrMaxElements) {
@@ -86,13 +86,20 @@ func (s *Srv) handleConnection(conn connection, cores int64) {
 		}
 		logger.Fatalf("failed to setup connection, abotring: %v", err)
 	}
-	converter := msgpack.New()
+	var (
+		ctx       = s.master.Ctx()
+		converter = msgpack.New()
+	)
 	for {
+		if ctx.Err() != nil {
+			logger.Infof("handler for connection %v stoped: %v", conn, ctx.Err())
+			return
+		}
 		msgBytes, err := conn.RecvMessage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				for el, ch := range recvByElement {
-					logger.Infof("stopped element {%d:%d}", conn.NodeID, el)
+					logger.Infof("connection {%d:%d} closed", conn.NodeID, el)
 					close(ch)
 				}
 				conn.close()
@@ -128,17 +135,17 @@ func (s *Srv) handleConnection(conn connection, cores int64) {
 		}
 		select {
 		case recvByElement[entities.OnNodeID(msg.ClientID)] <- decompressedMsg:
-		case <-time.After(recvChanTimeout):
+		case <-ctx.Done():
 			logger.ErrorMessage(
-				"node %d client %d missed message with len %d",
+				"master ctx stoped: node %d client %d missed message with len %d",
 				conn.NodeID, msg.ClientID, len(decompressedMsg),
 			)
 		}
 	}
 }
 
-func (s *Srv) setup(conn connection, cores int64) (map[entities.OnNodeID]chan []byte, error) {
-	setup, err := s.master.SetupNewNode(conn.NodeID, cores)
+func (s *Srv) setup(conn connection, cores int64, manualRole string) (map[entities.OnNodeID]chan []byte, error) {
+	setup, err := s.master.SetupNewNode(conn.NodeID, cores, manualRole)
 	if err != nil {
 		return nil, err
 	}
@@ -169,16 +176,6 @@ func (s *Srv) setup(conn connection, cores int64) (map[entities.OnNodeID]chan []
 				OnNodeID: uint32(set.OnNodeID),
 				Kind:     int64(entities.Evaler),
 			})
-		case entities.Broker:
-			// TODO: пока не ясно что тут надо делать
-			nodeConfiguration.Elements = append(nodeConfiguration.Elements, element{
-				OnNodeID: uint32(set.OnNodeID),
-				Kind:     int64(entities.Fuzzer),
-				FuzzerConfiguration: &fuzzerConfiguration{
-					MutatorID:   "mutator1",
-					SchedulerID: "scheduler1",
-				},
-			})
 		case entities.Fuzzer:
 			fuzzer := NewFuzzer(
 				MultiplexedConnection{
@@ -191,8 +188,7 @@ func (s *Srv) setup(conn connection, cores int64) (map[entities.OnNodeID]chan []
 				s.master.GetTestcaseChan(),
 			)
 
-			go fuzzer.Start(s.master.Ctx())
-
+			s.master.StartFuzzer(fuzzer)
 			nodeConfiguration.Elements = append(nodeConfiguration.Elements, element{
 				OnNodeID: uint32(set.OnNodeID),
 				Kind:     int64(entities.Fuzzer),

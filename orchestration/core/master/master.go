@@ -3,6 +3,7 @@ package master
 import (
 	"context"
 	"fmt"
+	"math"
 	"orchestration/core/infodb"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
@@ -15,7 +16,7 @@ import (
 )
 
 /*
-давайте введем следующие метрики:
+введем следующие метрики:
 	1) Кол-во тест-кейсов которое сейчас оценивается
 	2) Если тикер в мониторинге срабатывает, то можно увеличивать кол-во фаззеров
 (по-другому это значит, что оценщики простаивают тк проходит много времени в которое они не занимаются отправкой)
@@ -26,6 +27,7 @@ import (
 
 type NodeEvent uint8
 
+//go:generate stringer -type NodeEvent
 const (
 	Unknown NodeEvent = iota
 	NewNode
@@ -38,7 +40,11 @@ const (
 	// время в течении которого игнорируем все
 	// ивенты о перебалансировки, тк они кажется пойдут лавиной
 	RebalaceThreshold = time.Minute
-	EventChanBuf      = 512
+	EventChanBuf      = 256
+	TestcaseChanBuf   = 1024
+
+	analyzeInterval = 5 * time.Second
+	analuzeTopN     = 3
 )
 
 func (e NodeEvent) String() string {
@@ -96,32 +102,45 @@ type Element struct {
 type fuzzInfoDB interface {
 	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
 	AddFuzzer(fuzzer infodb.Fuzzer) error
-	GetCovData() (map[entities.ElementID]infodb.Fuzzer, *infodb.CovData)
+	CreateAnalyze(topN int) (infodb.Analyze, error)
 }
+
+type worker interface {
+	Stop()
+}
+
+type noopWorker struct{}
+
+func (noopWorker) Stop() {}
 
 type Master struct {
 	ctx context.Context
 
+	AnalRes      AnalyzeReuslts
 	db           fuzzInfoDB
 	testcaseChan chan entities.Testcase
 	eventChan    chan Event
 
-	mu                sync.Mutex
-	nodes             map[entities.NodeID]*Node
-	lastRebalanceTime time.Time
-	fuzzers           map[entities.ElementID]struct{}
-	evalers           map[entities.ElementID]struct{}
+	isTest             bool
+	mu                 sync.Mutex
+	nodes              map[entities.NodeID]*Node
+	lastRebalanceTime  time.Time
+	lastRebalanceEvent Event
+	lastAddedNode      entities.NodeID
+	fuzzers            map[entities.ElementID]worker
+	evalers            map[entities.ElementID]worker
 }
 
 func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 	master := &Master{
 		ctx:          ctx,
 		db:           db,
+		isTest:       true,
 		eventChan:    make(chan Event, EventChanBuf),
-		testcaseChan: make(chan entities.Testcase),
+		testcaseChan: make(chan entities.Testcase, TestcaseChanBuf),
 		nodes:        make(map[entities.NodeID]*Node, 0),
-		evalers:      make(map[entities.ElementID]struct{}, 0),
-		fuzzers:      make(map[entities.ElementID]struct{}, 0),
+		evalers:      make(map[entities.ElementID]worker, 0),
+		fuzzers:      make(map[entities.ElementID]worker, 0),
 	}
 
 	go func() {
@@ -131,6 +150,12 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 				return
 			case event := <-master.eventChan:
 				logger.Infof("got new event: %v", event)
+
+				masterEventCount.WithLabelValues(
+					event.Event.String(),
+					event.Element.String(),
+				).Inc()
+
 				switch event.Event {
 				case ElementDeleted:
 					master.elementDeleted(event)
@@ -140,17 +165,18 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 	}()
 
 	go func() {
+		analTicker := time.NewTicker(analyzeInterval)
+		defer analTicker.Stop()
 		for {
 			select {
 			case <-master.ctx.Done():
 				return
-			case <-time.After(30 * time.Second):
-				_, cov := master.db.GetCovData()
-				err := cov.UpdateDistances()
+			case <-analTicker.C:
+				an, err := master.db.CreateAnalyze(analuzeTopN)
 				if err != nil {
-					logger.Errorf(err, "failed to update distances")
+					logger.Error(err)
 				}
-				cov.GetNearestDistances()
+				fmt.Printf("\n an_res: %+v\n", an)
 			}
 		}
 	}()
@@ -170,18 +196,25 @@ func (m *Master) elementDeleted(e Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	switch e.NodeType {
-	case entities.Evaler:
-		delete(m.evalers, e.Element)
-		node, exists := m.nodes[e.Element.NodeID]
-		if !exists {
-			logger.Infof("node %v does not exist, can't delete its element", e.Element)
-		}
-		slices.DeleteFunc(node.elements, func(el Element) bool {
-			return el.OnNodeID == e.Element.OnNodeID && el.Type == e.NodeType
-		})
-		logger.Infof("deleted evaler %v", e.Element)
+	node, exists := m.nodes[e.Element.NodeID]
+	if !exists {
+		logger.Infof("node %v does not exist, can't delete its element", e.Element)
 	}
+	node.elements = slices.DeleteFunc(node.elements, func(el Element) bool {
+		return el.OnNodeID == e.Element.OnNodeID && el.Type == e.NodeType
+	})
+
+	if e.NodeType == entities.Evaler {
+		delete(m.evalers, e.Element)
+		totalEvalerCount.Dec()
+		logger.Infof("deleted evaler %v", e.Element)
+		return
+	}
+
+	delete(m.fuzzers, e.Element)
+	totalFuzzerCount.Dec()
+	logger.Infof("deleted fuzzer %v", e.Element)
+
 }
 
 var (
@@ -190,94 +223,150 @@ var (
 )
 
 // спрашиваем что поднять, обновляем уже после подъема???
-func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64) (NodeSetUp, error) {
+func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64, manualRole string) (NodeSetUp, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	logger.Infof("new node: %v with %d cores", nodeID, cores)
+	if cores == 0 {
+		cores = 1
+	}
+
+	logger.Debugf("node %v with cores %d and role %s want to connect", nodeID, cores, manualRole)
 
 	node, exists := m.nodes[nodeID]
 	if !exists {
-		if cores == 0 {
-			cores = 1
-		}
-
 		node = &Node{
 			id:       nodeID,
 			elements: make([]Element, 0, cores),
 			cores:    cores,
 		}
 		m.nodes[nodeID] = node
-	} else {
-		if node.cores == int64(len(node.elements)) {
-			return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
-		}
+
+		logger.Infof("new node: %v with %d cores", nodeID, cores)
 	}
-
-	newElements := make([]Element, 0, cores)
-
-	if len(m.evalers) == 0 {
-		evaler := Element{
-			OnNodeID: entities.OnNodeID(uuid.New().ID()),
-			Type:     entities.Evaler,
-		}
-		m.evalers[entities.ElementID{
-			NodeID:   nodeID,
-			OnNodeID: evaler.OnNodeID,
-		}] = struct{}{}
-		newElements = append(newElements, evaler)
+	if node.cores == int64(len(node.elements)) {
+		return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
 	}
+	lastElementInd := len(node.elements)
 
-	// experement
-	if len(newElements) == 0 {
-		fuzzer := Element{
-			OnNodeID: entities.OnNodeID(node.fuzzerByAllTime + 1),
-			Type:     entities.Fuzzer,
-		}
-		node.fuzzerByAllTime++
-		m.fuzzers[entities.ElementID{
-			NodeID:   nodeID,
-			OnNodeID: fuzzer.OnNodeID,
-		}] = struct{}{}
-		newElements = append(newElements, fuzzer)
-		m.newFuzzer(entities.ElementID{
-			NodeID:   nodeID,
-			OnNodeID: fuzzer.OnNodeID,
-		}, entities.FuzzerConf{
+	defer func() {
+		m.lastRebalanceTime = time.Now()
+	}()
+
+	switch manualRole {
+	case "fuzz":
+		m.newFuzzer(node, entities.FuzzerConf{
 			MutatorID: "mut1",
 			ForkMode:  true,
 		})
+		return NodeSetUp{
+			Event:    NewElement,
+			Elements: node.elements[lastElementInd:],
+		}, nil
+	case "eval":
+		m.newEvaler(node)
+		return NodeSetUp{
+			Event:    NewElement,
+			Elements: node.elements[lastElementInd:],
+		}, nil
 	}
-	//TODO: сохранить количество ядер
+
+	switch {
+	case len(m.evalers) == 0:
+		m.newEvaler(node)
+	case len(m.testcaseChan) > int(math.Ceil(0.90*TestcaseChanBuf)):
+		m.newEvaler(node)
+	}
+	if !m.isTest {
+		for i := int64(len(node.elements)); i < cores; i++ {
+			m.newFuzzer(node, entities.FuzzerConf{
+				MutatorID: "mut1",
+				ForkMode:  true,
+			})
+		}
+	} else {
+		if lastElementInd != 0 {
+			m.newFuzzer(node, entities.FuzzerConf{
+				MutatorID: "mut1",
+				ForkMode:  true,
+			})
+		}
+	}
 	// TODO: some hard hard logic here
 	// тут выдовать конфигурации тоже можно
 	// можно смело фаззер добавлять, если что добалансим??
 
-	m.lastRebalanceTime = time.Now()
-	node.elements = append(node.elements, newElements...)
-
 	return NodeSetUp{
 		Event:    NewElement,
-		Elements: newElements,
+		Elements: node.elements[lastElementInd:],
 	}, nil
 }
 
-func (m *Master) newFuzzer(id entities.ElementID, conf entities.FuzzerConf) {
+func (m *Master) newEvaler(node *Node) {
+	evaler := Element{
+		OnNodeID: entities.OnNodeID(uuid.New().ID()),
+		Type:     entities.Evaler,
+	}
+	m.evalers[entities.ElementID{
+		NodeID:   node.id,
+		OnNodeID: evaler.OnNodeID,
+	}] = &noopWorker{}
+	node.elements = append(node.elements, evaler)
+
+	logger.Infof("ADDED NEW EVALER TO DB")
+}
+
+func (m *Master) newFuzzer(node *Node, conf entities.FuzzerConf) {
+	fuzzer := Element{
+		OnNodeID: entities.OnNodeID(node.fuzzerByAllTime + 1),
+		Type:     entities.Fuzzer,
+	}
+	node.fuzzerByAllTime++
+	id := entities.ElementID{
+		NodeID:   node.id,
+		OnNodeID: fuzzer.OnNodeID,
+	}
+	m.fuzzers[id] = &noopWorker{}
+	node.elements = append(node.elements, fuzzer)
+
 	if err := m.db.AddFuzzer(infodb.Fuzzer{
 		ID:            id,
 		Configuration: conf,
 		Registered:    time.Now(),
-		Testcases:     make(map[uint64]struct{}, 0),
 	}); err != nil {
 		logger.Errorf(err, "failed to add new fuzzer: %v", id)
 	}
-	logger.Infof("ADDED NEW FUZZER: %v", id)
+	logger.Infof("ADDED NEW FUZZER TO DB: %v", id)
 }
 
 func (m *Master) StartEvaler(evaler evalClnt) {
-	w := newWorker(m.testcaseChan, m.eventChan, m.db, evaler)
-	go w.Run(m.ctx)
+	e := newEvaler(m.testcaseChan, m.eventChan, m.db, evaler)
+
+	m.mu.Lock()
+	m.evalers[evaler.GetElementID()] = e
+	m.mu.Unlock()
+
+	go e.Run(m.ctx)
+
+	totalEvalerCount.Inc()
 	logger.Infof("started new evaler: %v", evaler)
+}
+
+func (m *Master) StartFuzzer(fuzzer fuzzClnt) {
+	f := newFuzzer(m.testcaseChan, m.eventChan, fuzzer)
+
+	m.mu.Lock()
+	m.evalers[fuzzer.GetElementID()] = f
+	m.mu.Unlock()
+
+	go f.Run(m.ctx)
+
+	totalFuzzerCount.Inc()
+	logger.Infof("started new fuzzer: %v", fuzzer)
+}
+
+func (m *Master) StopFuzzer(id entities.ElementID) {
+
 }
 
 func (m *Master) Ctx() context.Context {

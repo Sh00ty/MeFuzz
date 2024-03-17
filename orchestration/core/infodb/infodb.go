@@ -3,18 +3,20 @@ package infodb
 import (
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Fuzzer struct {
-	ID            entities.ElementID
-	Configuration entities.FuzzerConf
-	BugsFound     uint
-	Registered    time.Time
-	Testcases     map[uint64]struct{}
+	ID                     entities.ElementID
+	Configuration          entities.FuzzerConf
+	BugsFound              uint
+	TotalSaveTestcaseCount uint
+	Registered             time.Time
 }
 
 type fuzzInfoDB struct {
@@ -27,8 +29,6 @@ type fuzzInfoDB struct {
 	mu *sync.RWMutex
 	// все зарегистрированные фаззеры
 	fuzzerMap map[entities.ElementID]Fuzzer
-	// фаззеры плохо проявиших себя в предыдущих раундах
-	toChangeConf map[entities.ElementID]struct{}
 	// информация необходимая для оценки схожести покрытий
 	covData *CovData
 }
@@ -44,21 +44,8 @@ func New(corpusDirName string) (*fuzzInfoDB, error) {
 		generalCovMu: &sync.Mutex{},
 		seedPool:     pool,
 		fuzzerMap:    make(map[entities.ElementID]Fuzzer, 0),
-		toChangeConf: make(map[entities.ElementID]struct{}),
 		covData:      NewCovData(),
 	}, nil
-}
-
-// ChangeConfig - сохраняет новый конфиг для фаззера
-func (db *fuzzInfoDB) ChangeConfig(fuzzerID entities.ElementID, conf entities.FuzzerConf) error {
-	db.mu.Lock()
-	fuzzer := db.fuzzerMap[fuzzerID]
-	fuzzer.Configuration = conf
-	db.fuzzerMap[fuzzerID] = fuzzer
-	db.covData.ChangeFuzzerConfig(fuzzerID, conf)
-	db.mu.Unlock()
-	logger.Debugf("changed fuzzer %v config to %v", fuzzerID, conf)
-	return nil
 }
 
 // AddFuzzer - добавляет новый фаззер и начинает собирать по нему информацию
@@ -69,14 +56,20 @@ func (db *fuzzInfoDB) AddFuzzer(f Fuzzer) error {
 	}
 	db.covData.AddFuzzer(f)
 	db.fuzzerMap[f.ID] = f
+	db.seedPool.AddFuzzer(f.ID)
 	db.mu.Unlock()
 	return nil
 }
 
 // AddTestcases - сохраняет список тест-кейсов за раз
 func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData) {
+	timer := prometheus.NewTimer(evaluationTime)
 	db.mu.Lock()
-	defer db.mu.Unlock()
+
+	defer func() {
+		db.mu.Unlock()
+		timer.ObserveDuration()
+	}()
 
 	for i := 0; i < len(tcList); i++ {
 		fuzzer, exists := db.fuzzerMap[tcList[i].FuzzerID]
@@ -85,29 +78,39 @@ func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []en
 			continue
 		}
 
-		if _, exists := fuzzer.Testcases[tcList[i].ID]; exists {
-			logger.Debugf("test case with hash %d already exists", tcList[i].ID)
+		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
+
+		if db.seedPool.HasInBloom(tcList[i].ID) {
+			logger.Infof("test case %d already exists", tcList[i].ID)
 			continue
 		}
-
-		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
 
 		evalDataList[i].NewCov = db.NewGeneralCov(evalDataList[i].Cov)
 		if !evalDataList[i].HasCrash && evalDataList[i].NewCov == 0 {
-			logger.Debug("useless testcase")
+			logger.Infof("useless testcase from %v", tcList[i].FuzzerID)
 			continue
 		}
 
+		var (
+			nodeID   = strconv.FormatUint(uint64(tcList[i].FuzzerID.NodeID), 10)
+			onNodeID = strconv.FormatUint(uint64(tcList[i].FuzzerID.OnNodeID), 10)
+		)
+
+		fuzzer.TotalSaveTestcaseCount++
+
 		if evalDataList[i].HasCrash {
 			fuzzer.BugsFound++
+
+			crashCount.WithLabelValues(nodeID, onNodeID).Inc()
 		}
 
-		fuzzer.Testcases[tcList[i].ID] = struct{}{}
 		db.fuzzerMap[tcList[i].FuzzerID] = fuzzer
 
 		if err := db.seedPool.AddSeed(tcList[i], evalDataList[i]); err != nil {
 			logger.Errorf(err, "failed to add testcase to pool: %v", tcList[i])
+			continue
 		}
+		savedTestcaseCount.WithLabelValues(nodeID, onNodeID).Inc()
 	}
 }
 
@@ -119,7 +122,7 @@ func (db *fuzzInfoDB) DeleteFuzzer(id entities.ElementID) error {
 		return errors.Errorf("fuzzer with id=%v doesn't exist", id)
 	}
 	delete(db.fuzzerMap, id)
-	delete(db.toChangeConf, id)
+	db.covData.DeleteFuzzer(id)
 	db.mu.Unlock()
 	return nil
 }
@@ -141,7 +144,6 @@ func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 	return res
 }
 
-// GetCovData - возращает данные необходимые для проведения PCA (НЕ ПОТОКОБЕЗОПАСНО для fuzzer map)
-func (db *fuzzInfoDB) GetCovData() (map[entities.ElementID]Fuzzer, *CovData) {
-	return db.fuzzerMap, db.covData
+func (db *fuzzInfoDB) CreateAnalyze(topN int) (Analyze, error) {
+	return db.covData.CreateAnalyze(topN)
 }

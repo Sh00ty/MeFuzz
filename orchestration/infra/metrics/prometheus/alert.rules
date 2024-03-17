@@ -1,0 +1,29 @@
+groups:
+- name: host
+  rules:
+  - alert: uptime
+    expr: up{job="mefuzz"} == 0
+    for: 30s
+    labels:
+      severity: critical
+    annotations:
+      summary: "Mefuzz master is down"
+      description: "Mefuzz master node is down, please check logs"
+      
+  - alert: need_more_fuzzers
+    expr: increase(master_event_total{event="NeedMoreFuzzers"}[1m]) > 0
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Need more fuzzers"
+      description: "Fuzzing process stucked, master havn't got any testcase for a long time, add more fuzzers please"
+
+  - alert: need_more_fuzzers
+    expr: increase(master_event_total{event="NeedMoreEvalers"}[1m]) > 0
+    for: 30s
+    labels:
+      severity: warning
+    annotations:
+      summary: "Need more evalers"
+      description: "Fuzzing process stucked, evalers can't process all generated testcases, please add more evalers"

@@ -91,19 +91,19 @@ where
             BrokerEventResult::ForwardToMaster =>  {
                 println!("{:#?}", event);
                 let event_bytes = rmp_serde::to_vec(&event)?;
-                let compressed = self.compressor.compress(&event_bytes)?;
-                let mut msg = llmp::TcpMasterMessage{
+                // let compressed = self.compressor.compress(&event_bytes)?;
+                let msg = llmp::TcpMasterMessage{
                     client_id: self.client_id,
                     flags: llmp::LLMP_FLAG_B2M | llmp::LLMP_FLAG_NEW_TEST_CASE,
                     payload: event_bytes,
                 };
-                match compressed{
-                    Some(c) => {
-                        msg.flags = msg.flags | llmp::LLMP_FLAG_COMPRESSED;
-                        msg.payload = c;
-                    },
-                    _ =>{}
-                };
+                // match compressed{
+                //     Some(c) => {
+                //         msg.flags = msg.flags | llmp::LLMP_FLAG_COMPRESSED;
+                //         msg.payload = c;
+                //     },
+                //     _ =>{}
+                // };
                 match self.sender.blocking_send(msg){
                     Ok(()) => {},
                     Err(e) => {

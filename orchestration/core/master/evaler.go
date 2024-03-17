@@ -7,25 +7,24 @@ import (
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type evalClnt interface {
 	// Evaluate - оценивает полученные тест-кейсы
 	Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingData, error)
 	GetElementID() entities.ElementID
+	worker
 }
 
 const (
 	evalRetryCount = 1
-	saveTimeout    = 1 * time.Minute
-	bufferMaxSize  = 10
+	saveTimeout    = 5 * time.Second
+	bufferMaxSize  = 32
 )
 
-// На каждый оценщик поднимается один воркер
-// это интуитивно тк там один поток оценивает
-// еще таким образом удобно вводить/выводить оценщика
-// также выглядит как здравая балансировка
-type Worker struct {
+type Evaler struct {
 	cancel context.CancelFunc
 
 	testcaseChan           chan entities.Testcase
@@ -34,47 +33,54 @@ type Worker struct {
 	evaler evalClnt
 	db     fuzzInfoDB
 
+	nodeIDStr   string
+	onNodeIDStr string
+
 	tcBuf []entities.Testcase
 }
 
-func newWorker(
+func newEvaler(
 	testcaseChan chan entities.Testcase,
 	configurationEventChan chan<- Event,
 	db fuzzInfoDB,
 	evaler evalClnt,
-) *Worker {
+) *Evaler {
 	if bufferMaxSize < 1 {
 		panic("buffer size must be greater then 0")
 	}
-	return &Worker{
+	return &Evaler{
 		testcaseChan:           testcaseChan,
 		configurationEventChan: configurationEventChan,
 		db:                     db,
 		evaler:                 evaler,
 		tcBuf:                  make([]entities.Testcase, 0, bufferMaxSize),
+		nodeIDStr:              fmt.Sprintf("%d", evaler.GetElementID().NodeID),
+		onNodeIDStr:            fmt.Sprintf("%d", evaler.GetElementID().OnNodeID),
 	}
 }
 
-func (w *Worker) Run(ctx context.Context) {
-	ctx, w.cancel = context.WithCancel(ctx)
+func (e *Evaler) Run(ctx context.Context) {
+	ctx, e.cancel = context.WithCancel(ctx)
 	ticker := time.NewTicker(saveTimeout)
 	secondeChance := true
 	for {
 		select {
 		case <-ticker.C:
-			w.flush()
+			e.flush()
 			if !secondeChance {
-				w.configurationEventChan <- Event{
+				e.configurationEventChan <- Event{
 					Event: NeedMoreFuzzers,
 				}
 				secondeChance = true
 				continue
 			}
 			secondeChance = false
-		case testcase := <-w.testcaseChan:
-			w.tcBuf = append(w.tcBuf, testcase)
-			if uint(len(w.tcBuf)) == bufferMaxSize {
-				w.flush()
+		case testcase := <-e.testcaseChan:
+			testcaseInChan.Dec()
+
+			e.tcBuf = append(e.tcBuf, testcase)
+			if uint(len(e.tcBuf)) == bufferMaxSize {
+				e.flush()
 			}
 			secondeChance = true
 			ticker.Reset(saveTimeout)
@@ -85,42 +91,51 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-func (w *Worker) Close() {
-	w.cancel()
+func (e *Evaler) Stop() {
+	e.cancel()
 }
 
-func (w *Worker) flush() {
-	if len(w.tcBuf) == 0 {
+func (e *Evaler) flush() {
+	if len(e.tcBuf) == 0 {
 		return
 	}
 
 	for i := 0; i < evalRetryCount+1; i++ {
-		evalData, err := w.evaler.Evaluate(w.tcBuf)
+		timer := prometheus.NewTimer(evaluationTime.WithLabelValues(
+			e.nodeIDStr,
+			e.onNodeIDStr,
+		))
+
+		evalData, err := e.evaler.Evaluate(e.tcBuf)
+
+		timer.ObserveDuration()
+
 		if errors.Is(err, ErrStopElement) {
-			w.cancel()
-			w.configurationEventChan <- Event{
+			e.cancel()
+			e.configurationEventChan <- Event{
 				Event:    ElementDeleted,
 				NodeType: entities.Evaler,
-				Element:  w.evaler.GetElementID(),
+				Element:  e.evaler.GetElementID(),
 			}
-			for _, tc := range w.tcBuf {
+			for _, tc := range e.tcBuf {
 				logger.Infof("resend tc %d to testcase chan", tc.ID)
-				w.testcaseChan <- tc
+				e.testcaseChan <- tc
+				testcaseInChan.Inc()
 			}
 			return
 		}
 		if err != nil {
-			logger.Errorf(err, "try [%d]: failed to evaluate %d testcases", i, len(w.tcBuf))
+			logger.Errorf(err, "try [%d]: failed to evaluate %d testcases", i, len(e.tcBuf))
 			continue
 		}
 
-		logger.Debugf("evaled new testcases")
-		for i, ed := range evalData {
-			fmt.Printf("%v%v\n", w.tcBuf[i], ed)
-		}
-		w.db.AddTestcases(w.tcBuf, evalData)
+		evaludatedTestcases.
+			WithLabelValues(e.nodeIDStr, e.onNodeIDStr).
+			Add(float64(len(e.tcBuf)))
+
+		e.db.AddTestcases(e.tcBuf, evalData)
 		break
 	}
 
-	w.tcBuf = w.tcBuf[:0]
+	e.tcBuf = e.tcBuf[:0]
 }

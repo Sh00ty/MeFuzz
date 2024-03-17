@@ -155,9 +155,9 @@ pub const LLMP_FLAG_B2M: Flags = Flags(0x4);
 /// новый тест-кейс
 pub const LLMP_FLAG_NEW_TEST_CASE: Flags = Flags(0x8);
 /// количество исполнений
-pub const LLMP_FLAG_EVALUATION: Flags = Flags(0x16);
+pub const LLMP_FLAG_EVALUATION: Flags = Flags(0x10);
 /// конфигурация фаззера
-pub const LLMP_FLAG_CONFIGURATION: Flags = Flags(0x32);
+pub const LLMP_FLAG_CONFIGURATION: Flags = Flags(0x20);
 
 /// Timt the broker 2 broker connection waits for incoming data,
 /// before checking for own data to forward again.

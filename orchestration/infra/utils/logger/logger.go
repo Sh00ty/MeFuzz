@@ -15,6 +15,15 @@ type stackTracer interface {
 func init() {
 	logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 	level := zerolog.DebugLevel
+	switch os.Getenv("LOG_LEVEL") {
+	case "error":
+		level = zerolog.ErrorLevel
+	case "warn":
+		level = zerolog.WarnLevel
+	case "info":
+		level = zerolog.InfoLevel
+	}
+
 	logger = logger.Level(level)
 	zerolog.DefaultContextLogger = &logger
 	zerolog.ErrorStackFieldName = "trace"
@@ -24,6 +33,7 @@ func init() {
 		}
 		return nil
 	}
+	log.Logger = logger
 }
 
 var (

@@ -16,7 +16,7 @@ func Compress(data []byte) ([]byte, bool, error) {
 	}
 	var buf bytes.Buffer
 
-	gWriter, err := zlib.NewWriterLevel(&buf, zlib.BestSpeed)
+	gWriter, err := zlib.NewWriterLevel(&buf, zlib.BestCompression)
 	if err != nil {
 		return nil, false, err
 	}
@@ -35,7 +35,7 @@ func DeCompress(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer func() {
-		if err := gReader.Close(); err != nil {
+		if err = gReader.Close(); err != nil {
 			logger.Errorf(err, "failed to close gzip reader")
 		}
 	}()

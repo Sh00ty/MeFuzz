@@ -44,7 +44,7 @@ func (e *Evaler) Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingD
 	out := evaluationOutput{}
 	if err := e.conn.Recv(&out); err != nil {
 		if errors.Is(err, ErrConnectionClosed) {
-			logger.Infof("fuzzer connection on conn %v closed", e.conn)
+			logger.Infof("evaler connection on conn %v closed", e.conn)
 			return nil, master.ErrStopElement
 		}
 		return nil, errors.Wrapf(err, "failed to recv output message")
@@ -65,4 +65,8 @@ func (e *Evaler) GetElementID() entities.ElementID {
 		NodeID:   e.conn.conn.NodeID,
 		OnNodeID: e.onNodeID,
 	}
+}
+
+func (e *Evaler) Stop() {
+	e.conn.Close()
 }

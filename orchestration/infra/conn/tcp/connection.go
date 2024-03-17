@@ -64,8 +64,13 @@ func (conn *connection) RecvMessage() ([]byte, error) {
 	}
 	msgLen := binary.BigEndian.Uint32(msgLenBytes)
 	msgBytes := make([]byte, msgLen)
-	_, err = conn.conn.Read(msgBytes)
-
+	for i := uint32(0); i < msgLen; {
+		n, err := conn.conn.Read(msgBytes[i:])
+		if err != nil {
+			return nil, err
+		}
+		i += uint32(n)
+	}
 	logger.Debugf("received %d bytes from %v", msgLen, conn.NodeID)
 	return msgBytes, err
 }
@@ -100,7 +105,7 @@ type MultiplexedConnection struct {
 func (c *MultiplexedConnection) Recv(out interface{}) error {
 	bytes, ok := <-c.recvChan
 	if !ok {
-		return errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
+		return ErrConnectionClosed
 	}
 	return msgpack.Unmarshal(bytes, out)
 }
@@ -108,7 +113,7 @@ func (c *MultiplexedConnection) Recv(out interface{}) error {
 func (c *MultiplexedConnection) RecvBytes() ([]byte, error) {
 	bytes, ok := <-c.recvChan
 	if !ok {
-		return nil, errors.Wrapf(ErrConnectionClosed, "connection closed: %v", c.conn)
+		return nil, ErrConnectionClosed
 	}
 	return bytes, nil
 }
@@ -145,7 +150,7 @@ func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags entities.
 
 	msg, compressed, err := compression.Compress(msg)
 	if err != nil {
-		return errors.Wrap(err, "failed to comress multiplex message")
+		return errors.Wrap(err, "failed to compress multiplex message")
 	}
 	if compressed {
 		flags = flags.Add(entities.Compressed)
@@ -176,7 +181,6 @@ func (c *MultiplexedConnection) spin() {
 			runtime.Gosched()
 		}
 	}
-	fmt.Println("after spin")
 }
 
 func (c *MultiplexedConnection) Close() {

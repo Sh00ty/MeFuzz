@@ -1,6 +1,8 @@
 package infodb
 
 import (
+	"encoding/binary"
+	"fmt"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
 	"os"
@@ -8,16 +10,25 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/pkg/errors"
 )
 
+const (
+	// bloom ~ 2mb
+	seedCountExpected      = 10e6
+	bloomFalsePositiveRate = 10e-4 // 0.1%
+
+	maxBestTcs = 500
+)
+
 type seed struct {
 	ID        uint64
-	Crash     bool
 	NewCov    uint
 	CreatedAt time.Time
 	FuzzerID  entities.ElementID
+	Crash     bool
 }
 
 func seedCmp(ai interface{}, bi interface{}) int {
@@ -45,19 +56,17 @@ func seedCmp(ai interface{}, bi interface{}) int {
 
 type seedPool struct {
 	seeds     *redblacktree.Tree
+	bloom     *bloom.BloomFilter
+	bloomBuf  []byte
 	corpusDir string
 }
 
 func NewSeedPool(corpusDirName string, initialSeeds []entities.Testcase, evalDataList []entities.EvaluatingData) (*seedPool, error) {
-	if err := os.RemoveAll(corpusDirName); err != nil {
-		return nil, errors.Errorf("please remove previous %s dir or give me permission on it", corpusDirName)
-	}
-	if err := os.Mkdir(corpusDirName, os.ModePerm); err != nil {
-		return nil, errors.Wrapf(err, "failed to create corpus %s", corpusDirName)
-	}
 	sp := &seedPool{
 		corpusDir: corpusDirName,
 		seeds:     redblacktree.NewWith(seedCmp),
+		bloom:     bloom.NewWithEstimates(seedCountExpected, bloomFalsePositiveRate),
+		bloomBuf:  make([]byte, 8),
 	}
 
 	for i, initialSeed := range initialSeeds {
@@ -68,9 +77,27 @@ func NewSeedPool(corpusDirName string, initialSeeds []entities.Testcase, evalDat
 	return sp, nil
 }
 
+func (sp *seedPool) AddFuzzer(id entities.ElementID) error {
+	return os.Mkdir(path.Join(sp.corpusDir, fmt.Sprintf("%d_%d", id.NodeID, id.OnNodeID)), 0777)
+}
+
+func (sp *seedPool) addToBloom(id uint64) {
+	binary.BigEndian.PutUint64(sp.bloomBuf, id)
+	sp.bloom = sp.bloom.Add(sp.bloomBuf)
+}
+
+func (sp *seedPool) HasInBloom(id uint64) bool {
+	binary.BigEndian.PutUint64(sp.bloomBuf, id)
+	return sp.bloom.Test(sp.bloomBuf)
+}
+
 func (sp *seedPool) AddSeed(tc entities.Testcase, evalData entities.EvaluatingData) error {
 	if err := os.WriteFile(
-		path.Join(sp.corpusDir, strconv.FormatUint(tc.ID, 10)),
+		path.Join(
+			sp.corpusDir,
+			fmt.Sprintf("%d_%d", tc.FuzzerID.NodeID, tc.FuzzerID.OnNodeID),
+			fmt.Sprintf("%d_%d", time.Now().Unix(), tc.ID),
+		),
 		tc.InputData,
 		os.ModePerm,
 	); err != nil {
@@ -78,6 +105,12 @@ func (sp *seedPool) AddSeed(tc entities.Testcase, evalData entities.EvaluatingDa
 	}
 	// тк входные данные уже на диске то нет необходимости в них в оперативной памяти
 	tc.InputData = nil
+	sp.addToBloom(tc.ID)
+
+	if sp.seeds.Size() > maxBestTcs {
+		logger.ErrorMessage("too many seeds in red black tree: %d", sp.seeds.Size())
+	}
+
 	sp.seeds.Put(seed{
 		ID:        tc.ID,
 		Crash:     evalData.HasCrash,

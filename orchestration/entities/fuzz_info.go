@@ -56,6 +56,10 @@ type ElementID struct {
 	OnNodeID OnNodeID
 }
 
+func (e ElementID) String() string {
+	return fmt.Sprintf("%d-%d", e.NodeID, e.OnNodeID)
+}
+
 type Testcase struct {
 	ID         uint64
 	FuzzerID   ElementID

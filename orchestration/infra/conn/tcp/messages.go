@@ -20,12 +20,13 @@ func (t TcpMasterMessage) String() string {
 
 // init messages
 
-type cores struct {
-	Cores int64 `msgpack:"cores,as_array"`
+type initMsg struct {
+	Cores      int64  `msgpack:"cores,as_array"`
+	ManualRole string `msgpack:"manual_role,as_array"`
 }
 
-func (cores) Name() string {
-	return "cores"
+func (initMsg) Name() string {
+	return "init_msg"
 }
 
 type nodeConfiguration struct {

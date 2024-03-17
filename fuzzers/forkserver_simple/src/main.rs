@@ -77,6 +77,14 @@ struct Opt {
         default_value = "SIGKILL"
     )]
     signal: Signal,
+
+    #[arg(
+        help = "Manual role selection(fuzz/eval)",
+        short = 'r',
+        long = "role",
+        default_value = ""
+    )]
+    manual_role: String,
 }
 
 struct EvalTask {
@@ -91,11 +99,16 @@ const EVALER: i64 = 3;
 #[allow(clippy::similar_names)]
 #[tokio::main]
 async fn main() {
-    let mut stream = TcpStream::connect("127.0.0.1:9090").await.unwrap();
+    let opt = Opt::parse();
+
+    let mut stream = TcpStream::connect("127.0.0.1:9990").await.unwrap();
     
-    let cpus = num_cpus::get_physical();
-    let cpus_msg = rmp_serde::to_vec(&Cores{cores:cpus}).expect("failed to serialize cpus");
-    send_tcp_msg(&mut stream, cpus_msg).await.expect("failed to send cpus count to master");
+    let init_msg = InitMsg{
+        cores:num_cpus::get_physical(),
+        manual_role: opt.manual_role,
+    };
+    let init_msg_bytes = rmp_serde::to_vec(&init_msg).expect("failed to serialize cpus");
+    send_tcp_msg(&mut stream, init_msg_bytes).await.expect("failed to send cpus count to master");
 
     let conf_msg_bytes = recv_tcp_msg(&mut stream).await.expect("failed to recv configuration");
     println!("connected to {:#?}", stream.peer_addr());
@@ -122,7 +135,7 @@ async fn main() {
 
     tokio::spawn(async move {
         loop {
-            let compressor = GzipCompressor::new(1024);
+            let compressor = GzipCompressor::new(GZIP_THRESHOLD);
             let msg = sendrx.recv().await.unwrap();
             
             match Multiplexer::send_msg(&mut wstream, &compressor, msg.payload, msg.client_id.0, msg.flags).await {
@@ -146,7 +159,7 @@ async fn main() {
             FUZZER => {
                 // TODO: возможно тут нужен чистый поток
                 thread::spawn(move|| {
-                    start_fuzzer(es, on_node_id);
+                    start_fuzzer(es, on_node_id, el.fuzzer_configuration);
                 });
             }
             EVALER => {
@@ -155,24 +168,22 @@ async fn main() {
             _ => {},
         }
     }
-    sleep(Duration::from_secs(300)).await;
+    sleep(Duration::from_secs(1200)).await;
 }
 
-fn start_fuzzer(stream: ElementStream, client_id: u32) {
-    // let broker_port = 1337;
-    // let limit = 128;
+fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfiguration>) {
+    
+    // if !conf.is_none() {
+    //     let _ = libfuzzer_libpng::fuzz(
+    //         &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
+    //         PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
+    //         vec![String::from("abc"), String::from("../../libfuzzer_libpng/fuzzer_libpng")],
+    //         ClientId(client_id), 
+    //         stream.stream,
+    //     );
+    //     return;
+    // }
 
-    // let _ = libfuzzer_libpng::fuzz(
-    //     &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
-    //     PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
-    //     vec![String::from("../../libfuzzer_libpng/fuzzer_libpng")],
-    //     broker_port, 
-    //     ClientId(client_id), 
-    //     stream.recv, 
-    //     stream.stream, 
-    //     limit,
-    //     0,
-    // );
     const MAP_SIZE: usize = 65536;
 
     let opt = Opt::parse();
@@ -237,7 +248,7 @@ fn start_fuzzer(stream: ElementStream, client_id: u32) {
     // such as the notification of the addition of a new item to the corpus
     let mut mgr = MasterEventManager::new(
         monitor, 
-        compress::GzipCompressor::new(1024), 
+        compress::GzipCompressor::new(GZIP_THRESHOLD), 
         ClientId(client_id), 
         stream.stream, 
     );
@@ -593,8 +604,9 @@ struct EvaluationOutput {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Cores{
-    pub cores: usize
+struct InitMsg{
+    pub cores: usize,
+    pub manual_role: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

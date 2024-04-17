@@ -43,8 +43,7 @@ const (
 	EventChanBuf      = 256
 	TestcaseChanBuf   = 1024
 
-	analyzeInterval = 5 * time.Second
-	analuzeTopN     = 3
+	analyzeInterval = time.Minute
 )
 
 func (e NodeEvent) String() string {
@@ -102,7 +101,7 @@ type Element struct {
 type fuzzInfoDB interface {
 	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
 	AddFuzzer(fuzzer infodb.Fuzzer) error
-	CreateAnalyze(topN int) (infodb.Analyze, error)
+	CreateAnalyze() (infodb.Analyze, error)
 }
 
 type worker interface {
@@ -116,7 +115,6 @@ func (noopWorker) Stop() {}
 type Master struct {
 	ctx context.Context
 
-	AnalRes      AnalyzeReuslts
 	db           fuzzInfoDB
 	testcaseChan chan entities.Testcase
 	eventChan    chan Event
@@ -172,11 +170,15 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 			case <-master.ctx.Done():
 				return
 			case <-analTicker.C:
-				an, err := master.db.CreateAnalyze(analuzeTopN)
+				an, err := master.db.CreateAnalyze()
 				if err != nil {
 					logger.Error(err)
 				}
-				fmt.Printf("\n an_res: %+v\n", an)
+				advice := master.startAnalysis(an)
+				if advice == nil {
+					continue
+				}
+				logger.ErrorMessage("analysis advice is %+v", advice)
 			}
 		}
 	}()
@@ -244,9 +246,9 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64, manualRole st
 
 		logger.Infof("new node: %v with %d cores", nodeID, cores)
 	}
-	if node.cores == int64(len(node.elements)) {
-		return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
-	}
+	// if node.cores == int64(len(node.elements)) {
+	// 	return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
+	// }
 	lastElementInd := len(node.elements)
 
 	defer func() {

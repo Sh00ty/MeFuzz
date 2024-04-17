@@ -144,6 +144,6 @@ func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 	return res
 }
 
-func (db *fuzzInfoDB) CreateAnalyze(topN int) (Analyze, error) {
-	return db.covData.CreateAnalyze(topN)
+func (db *fuzzInfoDB) CreateAnalyze() (Analyze, error) {
+	return db.covData.CreateAnalyze()
 }

@@ -4,13 +4,12 @@ import (
 	"math"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
-	"sort"
 	"sync"
 	"time"
 
+	"github.com/influxdata/tdigest"
+	"github.com/okhowang/clusters"
 	"github.com/pkg/errors"
-	"golang.org/x/exp/rand"
-	"gonum.org/v1/gonum/spatial/vptree"
 )
 
 // CovData - хранит данные по покрытию и расстанию различных конфигураций фаззеров
@@ -21,17 +20,11 @@ type CovData struct {
 	// но одинаковые конфигурации на разных машинах пока что разные тут фаззеры
 	// тк они в теории могут давать достаточно разносторонее покрытие
 	Fuzzers map[entities.ElementID]*fuzzer
-	// необходимо быстро находить ближайшего по расстоянию покрытия соседа
-	// дерево позволяющее делать быстрые запросы на ближайших соседей
-	Vptree *vptree.Tree
-	// время последнего обновления (в том числе и создания)
-	LastUpdate time.Time
 }
 
 func NewCovData() *CovData {
 	return &CovData{
-		Fuzzers:    make(map[entities.ElementID]*fuzzer, 0),
-		LastUpdate: time.Now(),
+		Fuzzers: make(map[entities.ElementID]*fuzzer, 0),
 	}
 }
 
@@ -71,10 +64,12 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.ElementID, config entiti
 	fuzzer.mu.Lock()
 	for j, tr := range cov {
 		if tr != 0 {
-			// кажется из-за наложенния и циклов идея
-			// хотя бы не невалиданая
-			fuzzer.TestcaseCount[j]++
-			fuzzer.Cov[j] += uint32(tr)
+			if fuzzer.Cov[j] == 0 {
+				fuzzer.Cov[j] = 1
+				fuzzer.TestcaseCount[j] = 1
+			}
+			// fuzzer.TestcaseCount[j]++
+			// fuzzer.Cov[j] += uint32(tr)
 		}
 	}
 	fuzzer.mu.Unlock()
@@ -95,192 +90,128 @@ type fuzzer struct {
 	// поэтому стоит отсекать такие моменты с помощью расстояние от начала координат
 	// ну и в целом оно дает представление о том что фаззер стоит на месте и никуда не двигается
 	SqNorm float64
-	// вспомогательная структура для хранения фаззера в дереве
-	// внутри нее покрытие не за все время, а за переод до ее создания
-	vpFuzzer *vpfuzzer
 }
 
-// vpfuzzer - вспомогательная структура, для подсчета расстояний на основе дерева
-type vpfuzzer struct {
-	ID       entities.ElementID
-	Coverage [entities.CovSize]float64
+type ClusteringData struct {
+	Clusters map[int][]entities.ElementID
+	Noice    []entities.ElementID
 }
 
-// Distance считает расстояние до c
-func (p *vpfuzzer) Distance(c vptree.Comparable) float64 {
-	var (
-		q    = c.(*vpfuzzer)
-		dist float64
-	)
-	for k, p := range p.Coverage {
-		diff := p - q.Coverage[k]
-		dist += diff * diff
+type Norm [2]float64
+
+func (n Norm) Norm() float64 {
+	return n[1]
+}
+
+func (n Norm) Speed() float64 {
+	return math.Abs(n[1] - n[0])
+}
+
+type Analyze struct {
+	// norms in sorted order (Asc)
+	Norms map[entities.ElementID]Norm
+	// data after clustering algorithm
+	ClusteringData ClusteringData
+	// coverages of all fuzzers
+	Coverages map[entities.ElementID][]float64
+}
+
+var distFn = func(f1, f2 []float64) float64 {
+	var dst float64
+	for i := range f1 {
+		diff := f1[i] - f2[i]
+		dst += diff * diff
 	}
-	return math.Sqrt(dist)
+	return math.Sqrt(dst)
 }
 
 // UpdateDistances обновляет дерево с расстояниями между фаззерами и так-же обновляет
 // квадрат нормы для векторов покрытия
-func (d *CovData) updateDistances() (err error) {
+func (d *CovData) calculate() ([]entities.ElementID, [][]float64, map[entities.ElementID]Norm) {
 
-	// приводим покрытие в правильный формат, тк исходный формат не совсем валидный для анализа
-	vpFuzzers := make([]vptree.Comparable, 0, len(d.Fuzzers))
+	var (
+		fuzzerIDs = make([]entities.ElementID, 0, len(d.Fuzzers))
+		coverages = make([][]float64, 0, len(d.Fuzzers))
+		norms     = make(map[entities.ElementID]Norm, len(d.Fuzzers))
+	)
+
 	for id, fuzzer := range d.Fuzzers {
 		fuzzer.mu.Lock()
 		var (
-			cov    = [entities.CovSize]float64{}
+			cov    = make([]float64, entities.CovSize)
 			sqNorm = float64(0)
 		)
-
 		for i := 0; i < entities.CovSize; i++ {
 			cov[i] = float64(fuzzer.Cov[i]) / math.Max(float64(fuzzer.TestcaseCount[i]), 1)
 			sqNorm += cov[i] * cov[i]
 		}
-		vp := vpfuzzer{
-			ID:       id,
-			Coverage: cov,
-		}
-		fuzzer.vpFuzzer = &vp
+		coverages = append(coverages, cov)
+		fuzzerIDs = append(fuzzerIDs, id)
+		norm := Norm{math.Sqrt(fuzzer.SqNorm), math.Sqrt(sqNorm)}
+		norms[id] = norm
 		fuzzer.SqNorm = sqNorm
 
-		vpFuzzers = append(vpFuzzers, &vp)
 		fuzzer.mu.Unlock()
 	}
-	d.Vptree, err = vptree.New(vpFuzzers, len(d.Fuzzers), rand.NewSource(uint64(time.Now().Unix())))
-	d.LastUpdate = time.Now()
 
+	return fuzzerIDs, coverages, norms
+}
+
+func (d *CovData) getClusters(fuzzerIDs []entities.ElementID, fuzzerCovMat [][]float64, eps float64) (ClusteringData, error) {
+	dbscan, err := clusters.DBSCAN(2, eps, 4, distFn)
 	if err != nil {
-		return errors.Wrap(err, "failed to build vptree")
+		return ClusteringData{}, err
 	}
-	return nil
-}
+	err = dbscan.Learn(fuzzerCovMat)
+	if err != nil {
+		return ClusteringData{}, err
+	}
 
-type Distance struct {
-	A    entities.ElementID
-	B    entities.ElementID
-	Dist float64
-}
-
-type Norm struct {
-	Norm float64
-	ID   entities.ElementID
-}
-
-// getNearestDistances - функция пока что для отладки
-func (d *CovData) getNearestDistances(fuzzerID entities.ElementID, topN int, buf []Distance) {
-	fuzzer := d.Fuzzers[fuzzerID]
-	// +1 тк там еще сама точка будет учавствовать
-	keeper := vptree.NewNKeeper(topN + 1)
-	d.Vptree.NearestSet(keeper, fuzzer.vpFuzzer)
-
-	k := 0
-	for _, dst := range keeper.Heap {
-		b := dst.Comparable.(*vpfuzzer).ID
-		buf[k] = Distance{
-			A:    fuzzerID,
-			B:    b,
-			Dist: dst.Dist,
-		}
-		if b == fuzzerID {
+	clusters := dbscan.Guesses()
+	res := ClusteringData{
+		Clusters: make(map[int][]entities.ElementID, len(clusters)),
+	}
+	for fuzzInd, cluster := range clusters {
+		if cluster != -1 {
+			res.Clusters[cluster] = append(res.Clusters[cluster], fuzzerIDs[fuzzInd])
 			continue
 		}
-		k++
+		res.Noice = append(res.Noice, fuzzerIDs[fuzzInd])
 	}
+	return res, nil
 }
 
-type Analyze struct {
-	// distances in sorted order (Asc)
-	Distances []Distance
-	// norms in sorted order (Asc)
-	Norms []Norm
-}
-
-func (d *CovData) CreateAnalyze(topN int) (Analyze, error) {
+func (d *CovData) CreateAnalyze() (Analyze, error) {
 	t := time.Now()
 	defer func() {
 		analyzeCreationTime.Observe(float64(time.Since(t).Milliseconds()))
 	}()
 	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	err := d.updateDistances()
-	if err != nil {
-		d.mu.RUnlock()
-		return Analyze{}, err
+	fuzzerIDs, coverages, norms := d.calculate()
+	td := tdigest.New()
+	for i := 0; i < len(coverages); i++ {
+		for j := i; j < len(coverages); j++ {
+			td.Add(distFn(coverages[i], coverages[j]), 1)
+		}
 	}
-
-	if topN > len(d.Fuzzers)-1 {
-		topN = len(d.Fuzzers) - 1
-	}
-	if topN <= 0 {
-		d.mu.RUnlock()
+	if len(coverages) == 0 {
 		return Analyze{}, nil
 	}
 
+	clusteringData, err := d.getClusters(fuzzerIDs, coverages, td.Quantile(0.4))
+	if err != nil {
+		return Analyze{}, err
+	}
 	an := Analyze{
-		Norms:     make([]Norm, 0, len(d.Fuzzers)),
-		Distances: make([]Distance, 0, len(d.Fuzzers)*topN),
+		ClusteringData: clusteringData,
+		Norms:          norms,
+		Coverages:      make(map[entities.ElementID][]float64, len(coverages)),
 	}
-	type pair struct {
-		A entities.ElementID
-		B entities.ElementID
+	for i, cov := range coverages {
+		an.Coverages[fuzzerIDs[i]] = cov
 	}
-	distSet := make(map[pair]struct{}, len(d.Fuzzers)*topN)
-	buf := make([]Distance, topN)
-	for id, f := range d.Fuzzers {
-		an.Norms = append(an.Norms, Norm{
-			ID:   id,
-			Norm: math.Sqrt(f.SqNorm),
-		})
-		d.getNearestDistances(id, topN, buf)
-		for _, dst := range buf {
-			dst.A, dst.B = min(dst.A, dst.B), max(dst.A, dst.B)
-			p := pair{
-				A: dst.A,
-				B: dst.B,
-			}
-			if _, exists := distSet[p]; exists {
-				continue
-			}
-			distSet[p] = struct{}{}
-			an.Distances = append(an.Distances, dst)
-		}
-	}
-	d.mu.RUnlock()
-
-	// кажется оч быстро тк фазеров не оч много
-	sort.Slice(an.Norms, func(i, j int) bool {
-		return an.Norms[i].Norm < an.Norms[j].Norm
-	})
-	// кажется оч быстро тк фазеров не оч много
-	sort.Slice(an.Distances, func(i, j int) bool {
-		return an.Distances[i].Dist < an.Distances[j].Dist
-	})
 
 	return an, nil
-}
-
-func max(a, b entities.ElementID) entities.ElementID {
-	if a.NodeID > b.NodeID {
-		return a
-	}
-	if b.NodeID > a.NodeID {
-		return b
-	}
-	if a.OnNodeID > b.OnNodeID {
-		return a
-	}
-	return b
-}
-
-func min(a, b entities.ElementID) entities.ElementID {
-	if a.NodeID < b.NodeID {
-		return a
-	}
-	if b.NodeID < a.NodeID {
-		return b
-	}
-	if a.OnNodeID < b.OnNodeID {
-		return a
-	}
-	return b
 }

@@ -1,86 +1,188 @@
 package master
 
 import (
+	"math"
 	"orchestration/core/infodb"
 	"orchestration/entities"
+	"orchestration/infra/utils/logger"
+	"slices"
+
+	"github.com/influxdata/tdigest"
 )
 
-/*
-храним для каждого анализа его скор
-его нужно каждый рас пересчитывать, но не полностью
-а с коэфициентом по времени (чем старше, тем более на него пофиг)\
-
-а как считать коэфициенты???
-
-*/
-
-type cycle[T any] struct {
-	buf    []T
-	maxLen int
-	prt    int
+type badFuzzer struct {
+	norm    float64
+	speed   float64
+	id      entities.ElementID
+	isNoice bool
 }
 
-func (c *cycle[T]) put(a T) {
-	if c.maxLen == len(c.buf) {
-		c.buf[c.prt] = a
-	} else {
-		c.buf = append(c.buf, a)
-	}
-	c.prt++
+type advice struct {
+	id      entities.ElementID
+	why     string
+	isNoice bool
 }
 
-func (c *cycle[T]) getByInd(i int) T {
-	return c.buf[(c.prt+i)%len(c.buf)]
-}
-
-func (c *cycle[T]) len() int { return len(c.buf) }
-
-type scores map[entities.ElementID]float64
-
-func (s scores) agregate(new scores) {
-	for el, sc := range new {
-		s[el] += sc
-	}
-}
-
-func (s scores) delete(old scores) {
-	for el, sc := range old {
-		s[el] -= sc
-	}
-}
-
-type AnalyzeReuslts struct {
-	prevScores cycle[scores]
-	score      scores
-}
-
-func (m *Master) startAnalysis(analyze infodb.Analyze) {
+func (m *Master) startAnalysis(analyze infodb.Analyze) *advice {
 	var (
-		curMap = make(map[entities.ElementID]float64, len(analyze.Norms))
-		score  scores
+		// TODO: avg cluster to identify bad clusters
+		norms  = tdigest.New()
+		speeds = tdigest.New()
+		bad    = make(map[entities.ElementID]badFuzzer, 0)
 	)
-
 	for _, norm := range analyze.Norms {
-		curMap[norm.ID] = norm.Norm
+		norms.Add(norm.Norm(), 1)
+		speeds.Add(norm.Speed(), 1)
 	}
-	for _, dist := range analyze.Distances {
 
+	for _, candidate := range analyze.ClusteringData.Noice {
+		// шум больше всего непохож на всех, поэтому он интересный
+		// TODO: было бы прикольно кол-во уникальных относительно всего кластера еще
+		canidateNorm := analyze.Norms[candidate]
+		if canidateNorm.Norm() < norms.Quantile(0.5) &&
+			canidateNorm.Speed() < speeds.Quantile(0.5) {
+			bad[candidate] = badFuzzer{
+				norm:    canidateNorm.Norm(),
+				speed:   canidateNorm.Speed(),
+				id:      candidate,
+				isNoice: true,
+			}
+		}
 	}
+
+	maxClusterSize := -1
+	for _, cluster := range analyze.ClusteringData.Clusters {
+		if len(cluster) > maxClusterSize {
+			maxClusterSize = len(cluster)
+		}
+	}
+	for _, cluster := range analyze.ClusteringData.Clusters {
+		if len(cluster) != maxClusterSize {
+			continue
+		}
+		var (
+			minNorm   = math.MaxFloat64
+			minNormID entities.ElementID
+			speed     float64
+		)
+		for _, id := range cluster {
+			norm := analyze.Norms[id]
+			if norm.Norm() < minNorm && norm.Speed() < speeds.Quantile(0.66) {
+				minNorm = norm.Norm()
+				speed = norm.Speed()
+				minNormID = id
+			}
+		}
+		bad[minNormID] = badFuzzer{
+			norm:  minNorm,
+			speed: speed,
+			id:    minNormID,
+		}
+	}
+
+	logger.Infof("%+v", analyze.Norms)
+	logger.Infof("%+v", analyze.ClusteringData)
+	logger.Infof("found bad fuzzers %+v", bad)
+
+	switch len(bad) {
+	case 0:
+		return nil
+	case 1:
+		for _, bf := range bad {
+			return &advice{
+				id:      bf.id,
+				why:     "only one bad fuzzer",
+				isNoice: bf.isNoice,
+			}
+		}
+	}
+
+	badUnique := detectByUniqueCoverage(bad, analyze)
+	if len(badUnique) == 1 {
+		bad := badUnique[0]
+		return &advice{
+			id:      bad.id,
+			why:     "min unique edges",
+			isNoice: bad.isNoice,
+		}
+	}
+	return detectByNormAndSpeed(badUnique)
 }
 
-// func (m *Master) processDist(
-// 	dist infodb.Distance,
-// 	norms [2]float64,
-// 	analyze infodb.Analyze,
-// ) []entities.ElementID {
-// 	if norms[0] == 0 {
+func detectByUniqueCoverage(bad map[entities.ElementID]badFuzzer, an infodb.Analyze) []badFuzzer {
+	type uniqueBlocks struct {
+		id    entities.ElementID
+		count int
+	}
 
-// 	}
-// }
+	ubs := make([]uniqueBlocks, 0, len(bad))
+	commonCoverage := make([]int, entities.CovSize)
+	for id := range bad {
+		cov := an.Coverages[id]
+		for i, c := range cov {
+			if c > 0 {
+				commonCoverage[i]++
+			}
+		}
+	}
+	for id := range bad {
+		ub := 0
+		cov := an.Coverages[id]
+		for i, c := range cov {
+			if c < 1 {
+				continue
+			}
+			if commonCoverage[i]-1 == 0 {
+				ub++
+			}
+		}
+		ubs = append(ubs, uniqueBlocks{
+			id:    id,
+			count: ub,
+		})
+	}
 
-// func (m *Master) processZeroNorm(id entities.ElementID) bool {
+	logger.Infof("ubs: %+v", ubs)
+	slices.SortFunc(ubs, func(a, b uniqueBlocks) int {
+		return a.count - b.count
+	})
+	// если самый лучший не дает выигрыша, то кикаем его
+	if ubs[len(ubs)-1].count == 0 {
+		return nil
+	}
 
-// 	for i := 0; i < m.AnalRes.analCycle.len(); i++ {
+	var (
+		first  = true
+		result []badFuzzer
+	)
+	for _, ub := range ubs {
+		if first {
+			first = false
+			result = append(result, bad[ub.id])
+			continue
+		}
+		if ub.count != 0 && !first {
+			return result
+		}
+		result = append(result, bad[ub.id])
+	}
+	return result
+}
 
-// 	}
-// }
+func detectByNormAndSpeed(bad []badFuzzer) *advice {
+	slices.SortFunc(bad, func(a, b badFuzzer) int {
+		if a.id == b.id {
+			return 0
+		}
+		if a.norm < b.norm {
+			return -1
+		}
+		return 1
+	})
+	b := bad[0]
+	return &advice{
+		id:      b.id,
+		why:     "worst norm",
+		isNoice: b.isNoice,
+	}
+}

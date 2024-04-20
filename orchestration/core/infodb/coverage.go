@@ -1,6 +1,7 @@
 package infodb
 
 import (
+	"fmt"
 	"math"
 	"orchestration/entities"
 	"orchestration/infra/utils/logger"
@@ -32,9 +33,7 @@ func NewCovData() *CovData {
 func (d *CovData) AddFuzzer(f Fuzzer) {
 	d.mu.Lock()
 	d.Fuzzers[f.ID] = &fuzzer{
-		Cov:           [entities.CovSize]uint32{},
-		TestcaseCount: [entities.CovSize]uint{},
-		mu:            &sync.Mutex{},
+		mu: &sync.Mutex{},
 	}
 	d.mu.Unlock()
 }
@@ -64,12 +63,7 @@ func (d *CovData) AddTestcaseCoverage(fuzzerID entities.ElementID, config entiti
 	fuzzer.mu.Lock()
 	for j, tr := range cov {
 		if tr != 0 {
-			if fuzzer.Cov[j] == 0 {
-				fuzzer.Cov[j] = 1
-				fuzzer.TestcaseCount[j] = 1
-			}
-			// fuzzer.TestcaseCount[j]++
-			// fuzzer.Cov[j] += uint32(tr)
+			fuzzer.Cov[j] = 1
 		}
 	}
 	fuzzer.mu.Unlock()
@@ -81,10 +75,6 @@ type fuzzer struct {
 	mu *sync.Mutex
 	// оригинальное покрытие за весь процесс фаззинга
 	Cov [entities.CovSize]uint32
-	// кол-во тест-кейсов фаззера на каждый элемент бранч
-	// для того чтобы уровнять дистанию от много создающих фаззеров
-	// так же для того чтобы редкое покрытие вносило больший импакт
-	TestcaseCount [entities.CovSize]uint
 	// квадрат длины вектора покрытия, нельзя сравнивать расстояние между фаззерами
 	// если один фаззер не будет никуда двигаться
 	// поэтому стоит отсекать такие моменты с помощью расстояние от начала координат
@@ -95,6 +85,18 @@ type fuzzer struct {
 type ClusteringData struct {
 	Clusters map[int][]entities.ElementID
 	Noice    []entities.ElementID
+}
+
+func (c ClusteringData) String() string {
+	if len(c.Clusters) == 0 {
+		return "No clustering results available"
+	}
+	str := "Clustering result:\n"
+	for num, cl := range c.Clusters {
+		str += fmt.Sprintf("cluster %d ---> %v", num, cl)
+	}
+	str += fmt.Sprintf("Noice points ---> %v", c.Noice)
+	return str
 }
 
 type Norm [2]float64
@@ -125,8 +127,6 @@ var distFn = func(f1, f2 []float64) float64 {
 	return math.Sqrt(dst)
 }
 
-// UpdateDistances обновляет дерево с расстояниями между фаззерами и так-же обновляет
-// квадрат нормы для векторов покрытия
 func (d *CovData) calculate() ([]entities.ElementID, [][]float64, map[entities.ElementID]Norm) {
 
 	var (
@@ -142,7 +142,7 @@ func (d *CovData) calculate() ([]entities.ElementID, [][]float64, map[entities.E
 			sqNorm = float64(0)
 		)
 		for i := 0; i < entities.CovSize; i++ {
-			cov[i] = float64(fuzzer.Cov[i]) / math.Max(float64(fuzzer.TestcaseCount[i]), 1)
+			cov[i] = float64(fuzzer.Cov[i])
 			sqNorm += cov[i] * cov[i]
 		}
 		coverages = append(coverages, cov)
@@ -199,13 +199,30 @@ func (d *CovData) CreateAnalyze() (Analyze, error) {
 	if len(coverages) == 0 {
 		return Analyze{}, nil
 	}
-
-	clusteringData, err := d.getClusters(fuzzerIDs, coverages, td.Quantile(0.4))
-	if err != nil {
-		return Analyze{}, err
+	var (
+		clusteringDataRes ClusteringData
+	)
+loop:
+	for quanile := 0.5; quanile >= 0.1; quanile -= 0.02 {
+		clusteringData, err := d.getClusters(fuzzerIDs, coverages, td.Quantile(quanile))
+		if err != nil {
+			return Analyze{}, err
+		}
+		for _, cluster := range clusteringData.Clusters {
+			if float64(len(cluster)) > float64(len(fuzzerIDs))*0.5 {
+				continue loop
+			}
+		}
+		if float64(len(clusteringData.Noice)) >= float64(len(fuzzerIDs))*0.8 {
+			logger.Infof("used %.2f quantile", quanile+0.02)
+			break
+		}
+		clusteringDataRes = clusteringData
+		logger.Infof("used %f quantile", quanile)
+		break
 	}
 	an := Analyze{
-		ClusteringData: clusteringData,
+		ClusteringData: clusteringDataRes,
 		Norms:          norms,
 		Coverages:      make(map[entities.ElementID][]float64, len(coverages)),
 	}

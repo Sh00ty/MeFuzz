@@ -14,7 +14,7 @@ groups:
     expr: increase(master_event_total{event="NeedMoreFuzzers"}[1m]) > 0
     for: 1m
     labels:
-      severity: warning
+      severity: critical
     annotations:
       summary: "Need more fuzzers"
       description: "Fuzzing process stucked, master havn't got any testcase for a long time, add more fuzzers please"
@@ -23,7 +23,16 @@ groups:
     expr: increase(master_event_total{event="NeedMoreEvalers"}[1m]) > 0
     for: 30s
     labels:
-      severity: warning
+      severity: critical
     annotations:
       summary: "Need more evalers"
       description: "Fuzzing process stucked, evalers can't process all generated testcases, please add more evalers"
+
+  - alert: need_more_fuzzers
+    expr: increase(crash_count_total[1m]) > 0
+    for: 5s
+    labels:
+      severity: warning
+    annotations:
+      summary: "Fuzzer found crash"
+      description: "One of running fuzzers found testcase witch leads to a crash of testing system"

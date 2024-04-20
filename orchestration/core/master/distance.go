@@ -1,6 +1,7 @@
 package master
 
 import (
+	"fmt"
 	"math"
 	"orchestration/core/infodb"
 	"orchestration/entities"
@@ -15,6 +16,14 @@ type badFuzzer struct {
 	speed   float64
 	id      entities.ElementID
 	isNoice bool
+}
+
+func badFuzzerSetToString(bad map[entities.ElementID]badFuzzer) string {
+	str := "bad fuzzer set:\n"
+	for _, bf := range bad {
+		str += fmt.Sprintf("id: %v, norm: %0.4f, speed: %0.4f, is noice: %v", bf.id, bf.norm, bf.speed, bf.isNoice)
+	}
+	return str
 }
 
 type advice struct {
@@ -37,7 +46,6 @@ func (m *Master) startAnalysis(analyze infodb.Analyze) *advice {
 
 	for _, candidate := range analyze.ClusteringData.Noice {
 		// шум больше всего непохож на всех, поэтому он интересный
-		// TODO: было бы прикольно кол-во уникальных относительно всего кластера еще
 		canidateNorm := analyze.Norms[candidate]
 		if canidateNorm.Norm() < norms.Quantile(0.5) &&
 			canidateNorm.Speed() < speeds.Quantile(0.5) {
@@ -73,6 +81,10 @@ func (m *Master) startAnalysis(analyze infodb.Analyze) *advice {
 				minNormID = id
 			}
 		}
+		zeroID := entities.ElementID{}
+		if minNormID == zeroID {
+			continue
+		}
 		bad[minNormID] = badFuzzer{
 			norm:  minNorm,
 			speed: speed,
@@ -80,9 +92,8 @@ func (m *Master) startAnalysis(analyze infodb.Analyze) *advice {
 		}
 	}
 
-	logger.Infof("%+v", analyze.Norms)
-	logger.Infof("%+v", analyze.ClusteringData)
-	logger.Infof("found bad fuzzers %+v", bad)
+	logger.Infof("%v", analyze.ClusteringData)
+	logger.Info(badFuzzerSetToString(bad))
 
 	switch len(bad) {
 	case 0:

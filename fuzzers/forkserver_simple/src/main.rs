@@ -519,17 +519,6 @@ pub struct Element {
 }
 
 fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfiguration>) {    
-    // if !conf.is_none() {
-    //     let _ = libfuzzer_libpng::fuzz(
-    //         &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
-    //         PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
-    //         vec![String::from("abc"), String::from("../../libfuzzer_libpng/fuzzer_libpng")],
-    //         ClientId(client_id), 
-    //         stream.stream,
-    //     );
-    //     return;
-    // }
-
     const MAP_SIZE: usize = 65536;
 
     let opt = Opt::parse();
@@ -588,7 +577,8 @@ fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfi
     .unwrap();
 
     // The Monitor trait define how the fuzzer stats are reported to the user
-    let monitor = SimpleMonitor::new(|s| println!("{s}"));
+    // let monitor = SimpleMonitor::new(|s| println!("{s}"));
+    let monitor = NopMonitor::new();
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus
@@ -631,6 +621,17 @@ fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfi
     
     state.load_initial_inputs(&mut fuzzer,&mut executor, &mut mgr, &corpus_dirs).expect("Failed to load initial inputs");
 
+     // Create a PNG dictionary if not existing
+     if state.metadata().get::<Tokens>().is_none() {
+        state.add_metadata(Tokens::from([
+            vec![137, 80, 78, 71, 13, 10, 26, 10], // PNG header
+            "IHDR".as_bytes().to_vec(),
+            "IDAT".as_bytes().to_vec(),
+            "PLTE".as_bytes().to_vec(),
+            "IEND".as_bytes().to_vec(),
+        ]));
+    }
+
     state.add_metadata(tokens);
 
     // Setup a mutational stage with a basic bytes mutator
@@ -653,17 +654,6 @@ fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfi
 
 
 fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfiguration>) {    
-    // if !conf.is_none() {
-    //     let _ = libfuzzer_libpng::fuzz(
-    //         &[PathBuf::from("../../libfuzzer_libpng/corpus/")],
-    //         PathBuf::from("../../libfuzzer_libpng/corpus/crashes"),
-    //         vec![String::from("abc"), String::from("../../libfuzzer_libpng/fuzzer_libpng")],
-    //         ClientId(client_id), 
-    //         stream.stream,
-    //     );
-    //     return;
-    // }
-
     const MAP_SIZE: usize = 65536;
 
     let opt = Opt::parse();
@@ -682,17 +672,10 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     let edges_observer =
         unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
 
-    // Create an observation channel to keep track of the execution time
-    let time_observer = TimeObserver::new("time");
     
     // Feedback to rate the interestingness of an input
     // This one is composed by two Feedbacks in OR
-    let mut feedback = feedback_or!(
-        // New maximization map feedback linked to the edges observer and the feedback state
-        MaxMapFeedback::new_tracking(&edges_observer, true, false),
-        // Time feedback, this one does not need a feedback state
-        TimeFeedback::with_observer(&time_observer)
-    );
+    let mut feedback = MaxMapFeedback::new_tracking(&edges_observer, true, true);
 
     // A feedback to choose if an input is a solution or not
     // We want to do the same crash deduplication that AFL does
@@ -722,7 +705,7 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     .unwrap();
 
     // The Monitor trait define how the fuzzer stats are reported to the user
-    let monitor = SimpleMonitor::new(|s| println!("{s}"));
+    let monitor = NopMonitor::new();
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus
@@ -733,7 +716,7 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
         stream.stream, 
     );
     let map_observer = HitcountsMapObserver::new(edges_observer);
-    let scheduler = powersched::PowerQueueScheduler::new(&mut state, &map_observer, powersched::PowerSchedule::EXPLORE);
+    let scheduler = powersched::PowerQueueScheduler::new(&mut state, &map_observer, powersched::PowerSchedule::QUAD);
     
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
@@ -744,15 +727,13 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     // Create the executor for the forkserver
     let args = opt.arguments;
 
-    let mut tokens = Tokens::new();
     let forkserver = ForkserverExecutor::builder()
         .program(opt.executable)
         .debug_child(debug_child)
         .shmem_provider(&mut shmem_provider)
-        .autotokens(&mut tokens)
         .parse_afl_cmdline(args)
         .coverage_map_size(MAP_SIZE)
-        .build(tuple_list!(time_observer, map_observer))
+        .build(tuple_list!(map_observer))
         .unwrap();
 
     let mut executor = TimeoutForkserverExecutor::with_signal(
@@ -764,12 +745,21 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     
     state.load_initial_inputs(&mut fuzzer,&mut executor, &mut mgr, &corpus_dirs).expect("Failed to load initial inputs");
 
-    state.add_metadata(tokens);
+    // Create a PNG dictionary if not existing
+    if state.metadata().get::<Tokens>().is_none() {
+        state.add_metadata(Tokens::from([
+            vec![137, 80, 78, 71, 13, 10, 26, 10], // PNG header
+            "IHDR".as_bytes().to_vec(),
+            "IDAT".as_bytes().to_vec(),
+            "PLTE".as_bytes().to_vec(),
+            "IEND".as_bytes().to_vec(),
+        ]));
+    }
 
     // Setup a mutational stage with a basic bytes mutator
     let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
     if opt.mutator_config == "mopt" {
-        let mutator = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 8, 5).unwrap();
+        let mutator = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();
         let mut stages = tuple_list!(StdMutationalStage::new(mutator));
     
         fuzzer
@@ -777,8 +767,8 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
             .expect("Error in the fuzzing loop");
         return 
     }
+
     let mut stages = tuple_list!(StdMutationalStage::new(mutator));
-    
     fuzzer
         .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
         .expect("Error in the fuzzing loop");

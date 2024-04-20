@@ -43,7 +43,7 @@ const (
 	EventChanBuf      = 256
 	TestcaseChanBuf   = 1024
 
-	analyzeInterval = time.Minute
+	analyzeInterval = 5 * time.Minute
 )
 
 func (e NodeEvent) String() string {
@@ -102,6 +102,7 @@ type fuzzInfoDB interface {
 	AddTestcases(tcList []entities.Testcase, evalDataList []entities.EvaluatingData)
 	AddFuzzer(fuzzer infodb.Fuzzer) error
 	CreateAnalyze() (infodb.Analyze, error)
+	DeleteFuzzer(id entities.ElementID) error
 }
 
 type worker interface {
@@ -119,14 +120,12 @@ type Master struct {
 	testcaseChan chan entities.Testcase
 	eventChan    chan Event
 
-	isTest             bool
-	mu                 sync.Mutex
-	nodes              map[entities.NodeID]*Node
-	lastRebalanceTime  time.Time
-	lastRebalanceEvent Event
-	lastAddedNode      entities.NodeID
-	fuzzers            map[entities.ElementID]worker
-	evalers            map[entities.ElementID]worker
+	isTest            bool
+	mu                sync.Mutex
+	nodes             map[entities.NodeID]*Node
+	lastRebalanceTime time.Time
+	fuzzers           map[entities.ElementID]worker
+	evalers           map[entities.ElementID]worker
 }
 
 func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
@@ -214,7 +213,12 @@ func (m *Master) elementDeleted(e Event) {
 	}
 
 	delete(m.fuzzers, e.Element)
+	err := m.db.DeleteFuzzer(e.Element)
 	totalFuzzerCount.Dec()
+	if err != nil {
+		logger.Errorf(err, "failed to delete fuzzer %v", e.Element)
+		return
+	}
 	logger.Infof("deleted fuzzer %v", e.Element)
 
 }

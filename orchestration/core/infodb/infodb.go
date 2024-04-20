@@ -81,13 +81,13 @@ func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []en
 		db.covData.AddTestcaseCoverage(fuzzer.ID, fuzzer.Configuration, evalDataList[i].Cov)
 
 		if db.seedPool.HasInBloom(tcList[i].ID) {
-			logger.Infof("test case %d already exists", tcList[i].ID)
+			logger.Debugf("test case %d already exists", tcList[i].ID)
 			continue
 		}
 
 		evalDataList[i].NewCov = db.NewGeneralCov(evalDataList[i].Cov)
 		if !evalDataList[i].HasCrash && evalDataList[i].NewCov == 0 {
-			logger.Infof("useless testcase from %v", tcList[i].FuzzerID)
+			logger.Debugf("useless testcase from %v", tcList[i].FuzzerID)
 			continue
 		}
 
@@ -100,7 +100,7 @@ func (db *fuzzInfoDB) AddTestcases(tcList []entities.Testcase, evalDataList []en
 
 		if evalDataList[i].HasCrash {
 			fuzzer.BugsFound++
-
+			logger.ErrorMessage("fuzzer %v found crash with id %v", fuzzer.ID, tcList[i].ID)
 			crashCount.WithLabelValues(nodeID, onNodeID).Inc()
 		}
 

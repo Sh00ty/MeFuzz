@@ -250,9 +250,9 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64, manualRole st
 
 		logger.Infof("new node: %v with %d cores", nodeID, cores)
 	}
-	// if node.cores == int64(len(node.elements)) {
-	// 	return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
-	// }
+	if 2*node.cores < int64(len(node.elements)) {
+		return NodeSetUp{}, errors.Wrapf(ErrMaxElements, "on node %d", nodeID)
+	}
 	lastElementInd := len(node.elements)
 
 	defer func() {
@@ -298,9 +298,6 @@ func (m *Master) SetupNewNode(nodeID entities.NodeID, cores int64, manualRole st
 			})
 		}
 	}
-	// TODO: some hard hard logic here
-	// тут выдовать конфигурации тоже можно
-	// можно смело фаззер добавлять, если что добалансим??
 
 	return NodeSetUp{
 		Event:    NewElement,

@@ -34,7 +34,7 @@ func (e *Evaler) Evaluate(testCases []entities.Testcase) ([]entities.EvaluatingD
 	}
 
 	in := evalIn{Testcases: evalTestcases}
-	if err := e.conn.Send(e.onNodeID, entities.Evaluation, in); err != nil {
+	if err := e.conn.Send(e.onNodeID, Evaluation, in); err != nil {
 		if errors.Is(err, ErrConnectionClosed) {
 			return nil, master.ErrStopElement
 		}

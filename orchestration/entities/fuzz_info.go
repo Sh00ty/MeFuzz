@@ -21,16 +21,6 @@ const (
 	Evaler
 )
 
-type Flags uint8
-
-const (
-	Compressed    Flags = 0x1
-	Master        Flags = 0x4
-	NewTestCase   Flags = 0x8
-	Evaluation    Flags = 0x16
-	Configuration Flags = 0x32
-)
-
 const (
 	covSizePow2 = 16
 	CovSize     = 1 << covSizePow2
@@ -42,14 +32,6 @@ var (
 		OnNodeID: math.MaxUint16,
 	}
 )
-
-func (f Flags) Has(flag Flags) bool {
-	return flag == f&flag
-}
-
-func (f Flags) Add(flag Flags) Flags {
-	return f | flag
-}
 
 type ElementID struct {
 	NodeID   NodeID

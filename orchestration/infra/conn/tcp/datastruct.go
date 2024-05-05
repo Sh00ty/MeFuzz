@@ -4,6 +4,24 @@ import (
 	"fmt"
 )
 
+type flags uint8
+
+const (
+	Compressed    flags = 0x1
+	Master        flags = 0x4
+	NewTestCase   flags = 0x8
+	Evaluation    flags = 0x16
+	Configuration flags = 0x32
+)
+
+func (f flags) Has(flag flags) bool {
+	return flag == f&flag
+}
+
+func (f flags) Add(flag flags) flags {
+	return f | flag
+}
+
 type TcpMasterMessage struct {
 	ClientID uint32 `msgpack:"client_id,as_array"`
 	Flags    uint32 `msgpack:"flags,as_array"`

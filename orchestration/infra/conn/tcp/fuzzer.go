@@ -34,7 +34,7 @@ func NewFuzzer(
 }
 
 func (f *Fuzzer) GetTestcase(ctx context.Context) (entities.Testcase, error) {
-	outBytes, err := f.conn.RecvBytes()
+	outBytes, err := f.conn.RecvRaw()
 	if err != nil {
 		if errors.Is(err, ErrConnectionClosed) {
 			logger.Infof("fuzzer connection on conn %v closed", f.conn)
@@ -46,7 +46,6 @@ func (f *Fuzzer) GetTestcase(ctx context.Context) (entities.Testcase, error) {
 	if err := msgpack.UnmarshalEnum(outBytes, out); err != nil {
 		return entities.Testcase{}, errors.Wrap(err, "failed to unmarshal new testcase")
 	}
-
 	inputData := msgpack.CovertTo[int, byte](out.Input.Input)
 	return entities.Testcase{
 		ID: hashing.MakeHash(inputData),

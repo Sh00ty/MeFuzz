@@ -33,7 +33,7 @@ const (
 type (
 	HandlerMessage struct {
 		Payload  []byte
-		Flag     entities.Flags
+		Flags    flags
 		NodeID   entities.NodeID
 		ClientID entities.OnNodeID
 	}
@@ -87,14 +87,12 @@ func (c *Client) clearConnection(conn connection) {
 }
 
 func (c *Client) Connect(ctx context.Context, elementType entities.ElementType, addr string, port uint16) error {
-
 	conn, err := Connect(addr, port)
 	if err != nil {
 		return err
 	}
-	// пока соединени не установится или не провалится мы блокируем доступ к этому блоку
+	// пока соединение не установится или не провалится мы блокируем доступ к этому блоку
 	c.mu.Lock()
-
 	if _, exists := c.connMap[conn.NodeID]; exists {
 		c.mu.Unlock()
 
@@ -116,7 +114,6 @@ func (c *Client) Connect(ctx context.Context, elementType entities.ElementType, 
 			NodeID: conn.NodeID,
 		},
 	}
-
 	c.mu.Unlock()
 
 	c.Handle(ctx, conn, sendChan)
@@ -163,15 +160,15 @@ func (c *Client) Handle(ctx context.Context, conn connection, input <-chan entit
 				logger.Errorf(err, "failed to unmarshal tcp message: conn=%v", conn)
 				continue
 			}
-			flags := entities.Flags(msg.Flags)
-			if !flags.Has(entities.Master) {
+			flags := flags(msg.Flags)
+			if !flags.Has(Master) {
 				logger.Infof("received message without M2B flag; msg=%v", msg)
 				continue
 			}
 
 			payload := msgpack.CovertTo[int, byte](msg.Payload)
 
-			if flags.Has(entities.Compressed) {
+			if flags.Has(Compressed) {
 				payload, err = compression.DeCompress(payload)
 				if err != nil {
 					logger.Errorf(err, "failed to decomptess msg=%v", msg)
@@ -181,7 +178,7 @@ func (c *Client) Handle(ctx context.Context, conn connection, input <-chan entit
 
 			err = c.h(ctx, c.recvMsgChan, HandlerMessage{
 				Payload:  payload,
-				Flag:     flags,
+				Flags:    flags,
 				NodeID:   conn.NodeID,
 				ClientID: entities.OnNodeID(msg.ClientID),
 			})
@@ -207,9 +204,9 @@ func (c *Client) Handle(ctx context.Context, conn connection, input <-chan entit
 					logger.Errorf(err, "failed to compress msg=%v", msg)
 					continue
 				}
-				flags := entities.Master
+				flags := Master
 				if len(compressed) != len(msgBytes) {
-					flags = flags.Add(entities.Compressed)
+					flags = flags.Add(Compressed)
 				}
 
 				tcpMasterMsgBytes, err := converter.Marshal(

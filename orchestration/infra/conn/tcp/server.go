@@ -9,15 +9,12 @@ import (
 	"orchestration/infra/utils/logger"
 	"orchestration/infra/utils/msgpack"
 	"sync/atomic"
-	"time"
 
 	"github.com/pkg/errors"
 )
 
 const (
 	listenAddr = ":9990"
-
-	recvChanTimeout = 30 * time.Millisecond
 )
 
 type Srv struct {
@@ -121,8 +118,8 @@ func (s *Srv) handleConnection(conn connection, initMsg initMsg) {
 		}
 
 		decompressedMsg := msgpack.CovertTo[int, byte](msg.Payload)
-		flags := entities.Flags(msg.Flags)
-		if flags.Has(entities.Compressed) {
+		flags := flags(msg.Flags)
+		if flags.Has(Compressed) {
 			decompressedMsg, err = compression.DeCompress(decompressedMsg)
 			if err != nil {
 				logger.Errorf(

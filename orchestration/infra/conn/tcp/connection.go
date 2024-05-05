@@ -76,12 +76,10 @@ func (conn *connection) RecvMessage() ([]byte, error) {
 }
 
 func (conn *connection) SendMessage(msg []byte) error {
-
 	if err := binary.Write(conn.conn, binary.BigEndian, uint32(len(msg))); err != nil {
 		return err
 	}
 	n, err := conn.conn.Write(msg)
-
 	logger.Debugf("sent %d bytes to %v", n, conn.NodeID)
 	return err
 }
@@ -110,7 +108,7 @@ func (c *MultiplexedConnection) Recv(out interface{}) error {
 	return msgpack.Unmarshal(bytes, out)
 }
 
-func (c *MultiplexedConnection) RecvBytes() ([]byte, error) {
+func (c *MultiplexedConnection) RecvRaw() ([]byte, error) {
 	bytes, ok := <-c.recvChan
 	if !ok {
 		return nil, ErrConnectionClosed
@@ -118,7 +116,7 @@ func (c *MultiplexedConnection) RecvBytes() ([]byte, error) {
 	return bytes, nil
 }
 
-func (c *MultiplexedConnection) Send(onNodeID entities.OnNodeID, flags entities.Flags, msg interface{}) error {
+func (c *MultiplexedConnection) Send(onNodeID entities.OnNodeID, flags flags, msg interface{}) error {
 	bytes, err := c.converter.Marshal(msg)
 	if err != nil {
 		return errors.Wrapf(err, "failed to marshal message: %v", msg)
@@ -130,7 +128,7 @@ func (c *MultiplexedConnection) Send(onNodeID entities.OnNodeID, flags entities.
 	return err
 }
 
-func (c *MultiplexedConnection) SendEnum(onNodeID entities.OnNodeID, flags entities.Flags, msg msgpack.Namer) error {
+func (c *MultiplexedConnection) SendEnum(onNodeID entities.OnNodeID, flags flags, msg msgpack.Namer) error {
 	bytes, err := c.converter.MarshalEnum(msg)
 	if err != nil {
 		return errors.Wrapf(err, "failed to marshal message: %v", msg)
@@ -142,18 +140,18 @@ func (c *MultiplexedConnection) SendEnum(onNodeID entities.OnNodeID, flags entit
 	return err
 }
 
-func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags entities.Flags, msg []byte) error {
+func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags flags, msg []byte) error {
 	m := TcpMasterMessage{
 		ClientID: uint32(onNodeID),
 	}
-	flags = flags.Add(entities.Master)
+	flags = flags.Add(Master)
 
 	msg, compressed, err := compression.Compress(msg)
 	if err != nil {
 		return errors.Wrap(err, "failed to compress multiplex message")
 	}
 	if compressed {
-		flags = flags.Add(entities.Compressed)
+		flags = flags.Add(Compressed)
 	}
 
 	m.Flags = uint32(flags)
@@ -164,9 +162,7 @@ func (c *MultiplexedConnection) send(onNodeID entities.OnNodeID, flags entities.
 		return errors.Wrap(err, "failed to marshal multiplex message")
 	}
 
-	if !c.conn.estableshed.Load() {
-		c.spin()
-	}
+	c.spin()
 	return c.conn.SendMessage(encoded)
 }
 

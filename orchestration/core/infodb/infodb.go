@@ -147,3 +147,18 @@ func (db *fuzzInfoDB) NewGeneralCov(cov entities.Coverage) uint {
 func (db *fuzzInfoDB) CreateAnalyze() (Analyze, error) {
 	return db.covData.CreateAnalyze()
 }
+
+func (db *fuzzInfoDB) GetGlobalCoveragenfo() int {
+	db.generalCovMu.Lock()
+	defer db.generalCovMu.Unlock()
+
+	var (
+		openedBranches int
+	)
+	for _, cv := range db.generalCoverage {
+		if cv {
+			openedBranches++
+		}
+	}
+	return openedBranches
+}

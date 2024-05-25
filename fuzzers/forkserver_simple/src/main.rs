@@ -1,5 +1,5 @@
 use std::{thread::{self}, time::Duration, ops::{BitOr, BitAnd}, path::PathBuf, str::FromStr, borrow::Borrow};
-use libafl::{bolts::{compress, llmp::{self, Flags, LLMP_FLAG_B2M, LLMP_FLAG_COMPRESSED, LLMP_FLAG_EVALUATION}, os::{self, fork}}, events::master::MasterEventManager, executors, inputs::gramatron, monitors::{NopMonitor, SimpleMonitor}, mutators, prelude, schedulers::{self, powersched, WeightedScheduler}, stages::power, state::State, FuzzerConfiguration};
+use libafl::{bolts::{compress, llmp::{self, Flags, LLMP_FLAG_B2M, LLMP_FLAG_COMPRESSED, LLMP_FLAG_EVALUATION}, os::{self, fork}}, events::master::MasterEventManager, executors, inputs::gramatron, monitors::{NopMonitor, SimpleMonitor}, mutators, observers, prelude, schedulers::{self, powersched, WeightedScheduler}, stages::{self, power, MapEqualityFactory, PowerMutationalStage, StdTMinMutationalStage, TMinMutationalStage}, state::State, FuzzerConfiguration};
 use num_cpus;
 use tokio::{net::TcpStream, sync::{oneshot, mpsc}, time::sleep};
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,13 @@ struct Opt {
         default_value = ""
     )]
     sched_config: String,
+    #[arg(
+        help = "Scheduler configuration",
+        short = 't',
+        long = "stage",
+        default_value = ""
+    )]
+    stage_config: String,
 }
 
 struct EvalTask {
@@ -238,10 +245,10 @@ async fn start_evaler(mut stream: ElementStream, client_id: u32) {
             // RNG
             StdRand::with_seed(current_nanos()),
             // Corpus that will be evolved, we keep it in memory for performance
-            InMemoryCorpus::<BytesInput>::new(),
+            OnDiskCorpus::<BytesInput>::new(&opt.in_dir).unwrap(),
             // Corpus in which we store solutions (crashes in this example),
             // on disk so the user can get them after stopping the fuzzer
-            InMemoryCorpus::<BytesInput>::new(),
+            OnDiskCorpus::<BytesInput>::new(&opt.in_dir).unwrap(),
             // States of the feedbacks.
             // The feedbacks can report the data that should persist in the State.
             &mut feedback,
@@ -549,6 +556,8 @@ fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfi
         TimeFeedback::with_observer(&time_observer)
     );
 
+    let factory = MapEqualityFactory::new_from_observer(&edges_observer);
+
     // A feedback to choose if an input is a solution or not
     // We want to do the same crash deduplication that AFL does
     let mut objective = feedback_and_fast!(
@@ -635,18 +644,92 @@ fn start_fuzzer(stream: ElementStream, client_id: u32, _conf: Option<FuzzerConfi
     state.add_metadata(tokens);
 
     // Setup a mutational stage with a basic bytes mutator
-    let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
     if opt.mutator_config == "mopt" {
-        let mutator = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 8, 5).unwrap();
+        let mutator: prelude::StdMOptMutator<BytesInput, (prelude::BitFlipMutator, (prelude::ByteFlipMutator, (prelude::ByteIncMutator, (prelude::ByteDecMutator, (prelude::ByteNegMutator, (prelude::ByteRandMutator, (prelude::ByteAddMutator, (prelude::WordAddMutator, (prelude::DwordAddMutator, (prelude::QwordAddMutator, (prelude::ByteInterestingMutator, (prelude::WordInterestingMutator, (prelude::DwordInterestingMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesExpandMutator, (prelude::BytesInsertMutator, (prelude::BytesRandInsertMutator, (prelude::BytesSetMutator, (prelude::BytesRandSetMutator, (prelude::BytesCopyMutator, (prelude::BytesInsertCopyMutator, (prelude::BytesSwapMutator, (prelude::CrossoverInsertMutator, (prelude::CrossoverReplaceMutator, ()))))))))))))))))))))))))))), StdState<BytesInput, InMemoryCorpus<BytesInput>, prelude::RomuDuoJrRand, InMemoryCorpus<BytesInput>>> = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();
+        if opt.stage_config == "min" {
+            let minimizer: prelude::StdMOptMutator<BytesInput, (prelude::BitFlipMutator, (prelude::ByteFlipMutator, (prelude::ByteIncMutator, (prelude::ByteDecMutator, (prelude::ByteNegMutator, (prelude::ByteRandMutator, (prelude::ByteAddMutator, (prelude::WordAddMutator, (prelude::DwordAddMutator, (prelude::QwordAddMutator, (prelude::ByteInterestingMutator, (prelude::WordInterestingMutator, (prelude::DwordInterestingMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesExpandMutator, (prelude::BytesInsertMutator, (prelude::BytesRandInsertMutator, (prelude::BytesSetMutator, (prelude::BytesRandSetMutator, (prelude::BytesCopyMutator, (prelude::BytesInsertCopyMutator, (prelude::BytesSwapMutator, (prelude::CrossoverInsertMutator, (prelude::CrossoverReplaceMutator, ()))))))))))))))))))))))))))), StdState<BytesInput, InMemoryCorpus<BytesInput>, prelude::RomuDuoJrRand, InMemoryCorpus<BytesInput>>> = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();      
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
         let mut stages = tuple_list!(StdMutationalStage::new(mutator));
-    
         fuzzer
             .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
             .expect("Error in the fuzzing loop");
         return 
-    }
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    } else if opt.mutator_config == "tunaleble" {
+        let mutator = mutators::TuneableScheduledMutator::new(&mut state, havoc_mutations().merge(tokens_mutations()));
+        if opt.stage_config == "min" {
+            let minimizer = mutators::TuneableScheduledMutator::new(&mut state, havoc_mutations().merge(tokens_mutations()));        
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
+        let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
+        return
+    } else if opt.mutator_config == "common" {
+        let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
     
+        if opt.stage_config == "min" {
+            let minimizer = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
+        let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
+    }
+    let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    let mutator2 = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    if opt.stage_config == "min" {
+        let minimizer = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+        let mut stages = tuple_list!(
+        StdMutationalStage::new(mutator),
+        stages::StdPowerMutationalStage::new(mutator2),
+        StdTMinMutationalStage::new(
+            minimizer,
+            factory,
+            1 << 10
+        ));
+    
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
+        return
+    }
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator),stages::StdPowerMutationalStage::new(mutator2));
     fuzzer
         .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
         .expect("Error in the fuzzing loop");
@@ -676,6 +759,8 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     // Feedback to rate the interestingness of an input
     // This one is composed by two Feedbacks in OR
     let mut feedback = MaxMapFeedback::new_tracking(&edges_observer, true, true);
+    
+    let factory = MapEqualityFactory::new_from_observer(&edges_observer);
 
     // A feedback to choose if an input is a solution or not
     // We want to do the same crash deduplication that AFL does
@@ -757,18 +842,92 @@ fn start_fuzzer_weithed_sched(stream: ElementStream, client_id: u32, _conf: Opti
     }
 
     // Setup a mutational stage with a basic bytes mutator
-    let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
     if opt.mutator_config == "mopt" {
-        let mutator = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();
+        let mutator: prelude::StdMOptMutator<BytesInput, (prelude::BitFlipMutator, (prelude::ByteFlipMutator, (prelude::ByteIncMutator, (prelude::ByteDecMutator, (prelude::ByteNegMutator, (prelude::ByteRandMutator, (prelude::ByteAddMutator, (prelude::WordAddMutator, (prelude::DwordAddMutator, (prelude::QwordAddMutator, (prelude::ByteInterestingMutator, (prelude::WordInterestingMutator, (prelude::DwordInterestingMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesExpandMutator, (prelude::BytesInsertMutator, (prelude::BytesRandInsertMutator, (prelude::BytesSetMutator, (prelude::BytesRandSetMutator, (prelude::BytesCopyMutator, (prelude::BytesInsertCopyMutator, (prelude::BytesSwapMutator, (prelude::CrossoverInsertMutator, (prelude::CrossoverReplaceMutator, ()))))))))))))))))))))))))))), StdState<BytesInput, InMemoryCorpus<BytesInput>, prelude::RomuDuoJrRand, InMemoryCorpus<BytesInput>>> = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();
+        if opt.stage_config == "min" {
+            let minimizer: prelude::StdMOptMutator<BytesInput, (prelude::BitFlipMutator, (prelude::ByteFlipMutator, (prelude::ByteIncMutator, (prelude::ByteDecMutator, (prelude::ByteNegMutator, (prelude::ByteRandMutator, (prelude::ByteAddMutator, (prelude::WordAddMutator, (prelude::DwordAddMutator, (prelude::QwordAddMutator, (prelude::ByteInterestingMutator, (prelude::WordInterestingMutator, (prelude::DwordInterestingMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesDeleteMutator, (prelude::BytesExpandMutator, (prelude::BytesInsertMutator, (prelude::BytesRandInsertMutator, (prelude::BytesSetMutator, (prelude::BytesRandSetMutator, (prelude::BytesCopyMutator, (prelude::BytesInsertCopyMutator, (prelude::BytesSwapMutator, (prelude::CrossoverInsertMutator, (prelude::CrossoverReplaceMutator, ()))))))))))))))))))))))))))), StdState<BytesInput, InMemoryCorpus<BytesInput>, prelude::RomuDuoJrRand, InMemoryCorpus<BytesInput>>> = mutators::StdMOptMutator::new(&mut state, havoc_mutations(), 9, 6).unwrap();      
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
         let mut stages = tuple_list!(StdMutationalStage::new(mutator));
-    
         fuzzer
             .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
             .expect("Error in the fuzzing loop");
         return 
+    } else if opt.mutator_config == "tunaleble" {
+        let mutator = mutators::TuneableScheduledMutator::new(&mut state, havoc_mutations().merge(tokens_mutations()));
+        if opt.stage_config == "min" {
+            let minimizer = mutators::TuneableScheduledMutator::new(&mut state, havoc_mutations().merge(tokens_mutations()));        
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
+        let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
+        return
+    } else if opt.mutator_config == "common" {
+        let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    
+        if opt.stage_config == "min" {
+            let minimizer = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+            let mut stages = tuple_list!(
+            StdMutationalStage::new(mutator),
+            StdTMinMutationalStage::new(
+                minimizer,
+                factory,
+                1 << 10
+            ));
+        
+            fuzzer
+                .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+                .expect("Error in the fuzzing loop");
+            return
+        }
+        let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
     }
-
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    let mutator = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    let mutator2 = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+    if opt.stage_config == "min" {
+        let minimizer = StdScheduledMutator::with_max_stack_pow(havoc_mutations().merge(tokens_mutations()), 6);
+        let mut stages = tuple_list!(
+        StdMutationalStage::new(mutator),
+        stages::StdPowerMutationalStage::new(mutator2),
+        StdTMinMutationalStage::new(
+            minimizer,
+            factory,
+            1 << 10
+        ));
+    
+        fuzzer
+            .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
+            .expect("Error in the fuzzing loop");
+        return
+    }
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator),stages::StdPowerMutationalStage::new(mutator2));
     fuzzer
         .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
         .expect("Error in the fuzzing loop");

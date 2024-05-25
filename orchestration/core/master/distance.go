@@ -21,7 +21,7 @@ type badFuzzer struct {
 func badFuzzerSetToString(bad map[entities.ElementID]badFuzzer) string {
 	str := "bad fuzzer set:\n"
 	for _, bf := range bad {
-		str += fmt.Sprintf("id: %v, norm: %0.4f, speed: %0.4f, is noice: %v", bf.id, bf.norm, bf.speed, bf.isNoice)
+		str += fmt.Sprintf("%v: norm: %0.4f, speed: %0.4f, is noice: %v\n", bf.id, bf.norm, bf.speed, bf.isNoice)
 	}
 	return str
 }

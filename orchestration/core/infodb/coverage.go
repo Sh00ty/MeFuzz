@@ -93,9 +93,9 @@ func (c ClusteringData) String() string {
 	}
 	str := "Clustering result:\n"
 	for num, cl := range c.Clusters {
-		str += fmt.Sprintf("cluster %d ---> %v", num, cl)
+		str += fmt.Sprintf("cluster %d ---> %v\n", num, cl)
 	}
-	str += fmt.Sprintf("Noice points ---> %v", c.Noice)
+	str += fmt.Sprintf("Noice points ---> %v\n", c.Noice)
 	return str
 }
 
@@ -218,7 +218,7 @@ loop:
 			break
 		}
 		clusteringDataRes = clusteringData
-		logger.Infof("used %f quantile", quanile)
+		logger.Infof("used %.2f quantile", quanile)
 		break
 	}
 	an := Analyze{

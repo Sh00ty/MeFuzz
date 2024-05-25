@@ -103,6 +103,7 @@ type fuzzInfoDB interface {
 	AddFuzzer(fuzzer infodb.Fuzzer) error
 	CreateAnalyze() (infodb.Analyze, error)
 	DeleteFuzzer(id entities.ElementID) error
+	GetGlobalCoveragenfo() int
 }
 
 type worker interface {
@@ -178,6 +179,8 @@ func NewMaster(ctx context.Context, db fuzzInfoDB) *Master {
 					continue
 				}
 				logger.ErrorMessage("analysis advice is %+v", advice)
+				globalCov := master.db.GetGlobalCoveragenfo()
+				logger.ErrorMessage("mefuzz global coverage info is %d", globalCov)
 			}
 		}
 	}()
